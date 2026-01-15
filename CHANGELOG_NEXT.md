@@ -91,6 +91,13 @@ should target this file (`CHANGELOG_NEXT`).
 
 ### Backend changes
 
+#### JavaScript Backend
+
+* Added source map generation for the `--cg javascript` and `--cg node` code
+  generators, enabled with `--directive sourcemap`. This produces a `.map` file
+  alongside the generated JavaScript so Idris2 source locations can be recovered
+  in browser DevTools and Node.js stack traces.
+
 #### RefC Backend
 
 * Fixed an issue to do with `alligned_alloc` not existing on older MacOS
