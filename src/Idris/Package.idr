@@ -1017,6 +1017,7 @@ partitionOpts opts = foldr pOptUpdate (MkPFR [] [] False) opts
     optType CaseTreeHeuristics     = POpt
     optType (DumpANF f)            = POpt
     optType (DumpCases f)          = POpt
+    optType (DumpCasesJSON f)      = POpt
     optType (DumpLifted f)         = POpt
     optType (DumpVMCode f)         = POpt
     optType DebugElabCheck         = POpt
@@ -1049,6 +1050,7 @@ errorMsg = unlines
   , "    --timing"
   , "    --log <log level>"
   , "    --dumpcases <file>"
+  , "    --dumpcases-json <file>"
   , "    --dumplifted <file>"
   , "    --dumpvmcode <file>"
   , "    --debug-elab-check"

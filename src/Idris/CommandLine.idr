@@ -136,6 +136,8 @@ data CLOpt
   Metadata String |
    ||| Dump cases before compiling
   DumpCases String |
+   ||| Dump cases as structured JSON before compiling
+  DumpCasesJSON String |
    ||| Dump lambda lifted defs before compiling
   DumpLifted String |
    ||| Dump ANF defs before compiling
@@ -367,6 +369,8 @@ options = [MkOpt ["--check", "-c"] [] [CheckOnly]
               Nothing, -- dump metadata information from the given ttm file
            MkOpt ["--dumpcases"] [Required "output file"] (\f => [DumpCases f])
               Nothing, -- dump case trees to the given file
+           MkOpt ["--dumpcases-json"] [Required "output file"] (\f => [DumpCasesJSON f])
+              Nothing, -- dump case trees as structured JSON to the given file
            MkOpt ["--dumplifted"] [Required "output file"] (\f => [DumpLifted f])
               Nothing, -- dump lambda lifted trees to the given file
            MkOpt ["--dumpanf"] [Required "output file"] (\f => [DumpANF f])

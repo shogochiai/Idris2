@@ -489,6 +489,9 @@ preOptions (IgnoreMissingIPKG :: opts)
 preOptions (DumpCases f :: opts)
     = do setSession ({ dumpcases := Just f } !getSession)
          preOptions opts
+preOptions (DumpCasesJSON f :: opts)
+    = do setSession ({ dumpcasesjson := Just f } !getSession)
+         preOptions opts
 preOptions (DumpLifted f :: opts)
     = do setSession ({ dumplifted := Just f } !getSession)
          preOptions opts
