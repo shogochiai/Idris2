@@ -15,12 +15,14 @@ import Core.TTC
 
 import Data.IOArray
 import Data.String as String
+import Data.Vect
 import Libraries.Data.NameMap
 import Libraries.Data.NatSet
 import Libraries.Data.WithDefault
 import Libraries.Utils.Scheme
 
 import Idris.Syntax
+import Idris.Version
 
 import System.File
 import System.Info
@@ -230,6 +232,178 @@ dumpIR fn lns
     dumpDef : (Name, def) -> String
     dumpDef (n, d) = fullShow n ++ " = " ++ show d ++ "\n"
 
+fullShowName : Name -> String
+fullShowName (DN _ n) = show n
+fullShowName n = show n
+
+fcToMaybeString : FC -> Maybe String
+fcToMaybeString fc =
+  let rendered = show fc
+  in if rendered == "EmptyFC" then Nothing else Just rendered
+
+originFromCrashMessage : String -> String
+originFromCrashMessage msg =
+  if String.isInfixOf "Unhandled input" msg then "compiler_partial_completion"
+  else if String.isInfixOf "Nat case not covered" msg then "optimizer_artifact"
+  else if String.isInfixOf "No clauses" msg then "no_clause_body"
+  else "unknown"
+
+originFromBranchExp : NamedCExp -> String
+originFromBranchExp (NmCrash _ msg) = originFromCrashMessage msg
+originFromBranchExp _ = "user_clause"
+
+impossibleStatusFor : String -> String
+impossibleStatusFor "impossible_clause" = "impossible"
+impossibleStatusFor "no_clause_body" = "impossible"
+impossibleStatusFor "unknown" = "unknown"
+impossibleStatusFor _ = "reachable"
+
+partialStatusFor : String -> String
+partialStatusFor "compiler_partial_completion" = "compiler_partial_completion"
+partialStatusFor "unknown" = "unknown"
+partialStatusFor _ = "complete"
+
+artifactStatusFor : String -> String
+artifactStatusFor "optimizer_artifact" = "optimizer_artifact"
+artifactStatusFor "compiler_generated_helper" = "compiler_generated"
+artifactStatusFor "unknown" = "unknown"
+artifactStatusFor _ = "none"
+
+jsonEscape : String -> String
+jsonEscape str = pack (go (unpack str))
+  where
+    go : List Char -> List Char
+    go [] = []
+    go ('\\' :: cs) = '\\' :: '\\' :: go cs
+    go ('"' :: cs) = '\\' :: '"' :: go cs
+    go ('\n' :: cs) = '\\' :: 'n' :: go cs
+    go ('\r' :: cs) = '\\' :: 'r' :: go cs
+    go ('\t' :: cs) = '\\' :: 't' :: go cs
+    go (c :: cs) = c :: go cs
+
+jsonString : String -> String
+jsonString str = "\"" ++ jsonEscape str ++ "\""
+
+jsonField : String -> String -> String
+jsonField key value = jsonString key ++ ": " ++ value
+
+joinWithComma : List String -> String
+joinWithComma [] = ""
+joinWithComma [x] = x
+joinWithComma (x :: xs) = x ++ ", " ++ joinWithComma xs
+
+jsonObject : List String -> String
+jsonObject fields = "{ " ++ joinWithComma fields ++ " }"
+
+jsonArray : List String -> String
+jsonArray xs = "[ " ++ joinWithComma xs ++ " ]"
+
+nodeJson : String -> Nat -> Nat -> String -> String -> Maybe String -> String
+nodeJson functionName caseIdx branchIdx branchLabel origin sourceSpan =
+  jsonObject $
+    [ jsonField "node_id" (jsonString (functionName ++ "#" ++ show caseIdx ++ ":" ++ show branchIdx))
+    , jsonField "branch_index" (show branchIdx)
+    , jsonField "branch_label" (jsonString branchLabel)
+    , jsonField "origin" (jsonString origin)
+    , jsonField "impossible_status" (jsonString (impossibleStatusFor origin))
+    , jsonField "partial_status" (jsonString (partialStatusFor origin))
+    , jsonField "backend_artifact_status" (jsonString (artifactStatusFor origin))
+    ] ++ maybe [] (\span => [jsonField "source_span" (jsonString span)]) sourceSpan
+
+mutual
+  collectStructuredNodes : String -> Nat -> NamedCExp -> (List String, Nat)
+  collectStructuredNodes functionName nextCase expr =
+    case expr of
+      NmConCase fc _ alts def =>
+        let caseIdx = nextCase
+            (altNodes, nextAfterAlts) = collectConAltNodes functionName caseIdx 0 (S nextCase) alts
+            (defNodes, nextAfterDef) = collectDefaultNode functionName caseIdx (length alts) nextAfterAlts fc def
+        in (altNodes ++ defNodes, nextAfterDef)
+      NmConstCase fc _ alts def =>
+        let caseIdx = nextCase
+            (altNodes, nextAfterAlts) = collectConstAltNodes functionName caseIdx 0 (S nextCase) alts
+            (defNodes, nextAfterDef) = collectDefaultNode functionName caseIdx (length alts) nextAfterAlts fc def
+        in (altNodes ++ defNodes, nextAfterDef)
+      NmLocal _ _ => ([], nextCase)
+      NmRef _ _ => ([], nextCase)
+      NmLam _ _ body => collectStructuredNodes functionName nextCase body
+      NmLet _ _ val body =>
+        let (valNodes, nextAfterVal) = collectStructuredNodes functionName nextCase val
+            (bodyNodes, nextAfterBody) = collectStructuredNodes functionName nextAfterVal body
+        in (valNodes ++ bodyNodes, nextAfterBody)
+      NmApp _ fn args =>
+        let (fnNodes, nextAfterFn) = collectStructuredNodes functionName nextCase fn
+            (argNodes, nextAfterArgs) = collectStructuredNodesList functionName nextAfterFn args
+        in (fnNodes ++ argNodes, nextAfterArgs)
+      NmCon _ _ _ _ args =>
+        collectStructuredNodesList functionName nextCase args
+      NmOp _ _ args =>
+        collectStructuredNodesList functionName nextCase (toList args)
+      NmExtPrim _ _ args =>
+        collectStructuredNodesList functionName nextCase args
+      NmForce _ _ x => collectStructuredNodes functionName nextCase x
+      NmDelay _ _ x => collectStructuredNodes functionName nextCase x
+      NmPrimVal _ _ => ([], nextCase)
+      NmErased _ => ([], nextCase)
+      NmCrash _ _ => ([], nextCase)
+
+  collectStructuredNodesList : String -> Nat -> List NamedCExp -> (List String, Nat)
+  collectStructuredNodesList _ nextCase [] = ([], nextCase)
+  collectStructuredNodesList functionName nextCase (x :: xs) =
+    let (here, next1) = collectStructuredNodes functionName nextCase x
+        (rest, next2) = collectStructuredNodesList functionName next1 xs
+    in (here ++ rest, next2)
+
+  collectConAltNodes : String -> Nat -> Nat -> Nat -> List NamedConAlt -> (List String, Nat)
+  collectConAltNodes _ _ _ nextCase [] = ([], nextCase)
+  collectConAltNodes functionName caseIdx branchIdx nextCase (MkNConAlt conName _ _ _ body :: rest) =
+    let origin = originFromBranchExp body
+        branchNode = nodeJson functionName caseIdx branchIdx (show conName) origin Nothing
+        (nested, next1) = collectStructuredNodes functionName nextCase body
+        (restNodes, next2) = collectConAltNodes functionName caseIdx (S branchIdx) next1 rest
+    in (branchNode :: nested ++ restNodes, next2)
+
+  collectConstAltNodes : String -> Nat -> Nat -> Nat -> List NamedConstAlt -> (List String, Nat)
+  collectConstAltNodes _ _ _ nextCase [] = ([], nextCase)
+  collectConstAltNodes functionName caseIdx branchIdx nextCase (MkNConstAlt c body :: rest) =
+    let origin = originFromBranchExp body
+        branchNode = nodeJson functionName caseIdx branchIdx (show c) origin Nothing
+        (nested, next1) = collectStructuredNodes functionName nextCase body
+        (restNodes, next2) = collectConstAltNodes functionName caseIdx (S branchIdx) next1 rest
+    in (branchNode :: nested ++ restNodes, next2)
+
+  collectDefaultNode : String -> Nat -> Nat -> Nat -> FC -> Maybe NamedCExp -> (List String, Nat)
+  collectDefaultNode _ _ _ nextCase _ Nothing = ([], nextCase)
+  collectDefaultNode functionName caseIdx branchIdx nextCase fc (Just body) =
+    let origin = originFromBranchExp body
+        branchNode = nodeJson functionName caseIdx branchIdx "default" origin (fcToMaybeString fc)
+        (nested, next1) = collectStructuredNodes functionName nextCase body
+    in (branchNode :: nested, next1)
+
+namedDefToStructuredNodes : (Name, NamedDef) -> String
+namedDefToStructuredNodes (n, def) =
+  let functionName = fullShowName n
+      nodes =
+        case def of
+          MkNmFun _ body => fst (collectStructuredNodes functionName 0 body)
+          MkNmError body => fst (collectStructuredNodes functionName 0 body)
+          _ => []
+  in jsonObject
+      [ jsonField "function_name" (jsonString functionName)
+      , jsonField "nodes" (jsonArray nodes)
+      ]
+
+dumpIRJson : String -> List (Name, NamedDef) -> Core ()
+dumpIRJson fn lns
+    = do let payload =
+               jsonObject
+                 [ jsonField "compiler_version" (jsonString (showVersion False version))
+                 , jsonField "functions" (jsonArray (map namedDefToStructuredNodes lns))
+                 ]
+         Right () <- coreLift $ writeFile fn payload
+               | Left err => throw (FileErr fn err)
+         pure ()
+
 
 export
 nonErased : {auto c : Ref Ctxt Defs} ->
@@ -275,6 +449,7 @@ getCompileDataWith exports doLazyAnnots phase_in tm_in
          sopts <- getSession
          let phase = foldl {t=List} (flip $ maybe id max) phase_in $
                        [ Cases <$ dumpcases sopts
+                       , Cases <$ dumpcasesjson sopts
                        , Lifted <$ dumplifted sopts
                        , ANF <$ dumpanf sopts
                        , VMCode <$ dumpvmcode sopts
@@ -366,6 +541,10 @@ getCompileDataWith exports doLazyAnnots phase_in tm_in
          whenJust (dumpcases sopts) $ \ f =>
             do coreLift $ putStrLn $ "Dumping case trees to " ++ f
                dumpIR f (map (\(n, _, def) => (n, def)) namedDefs)
+
+         whenJust (dumpcasesjson sopts) $ \ f =>
+            do coreLift $ putStrLn $ "Dumping case trees as JSON to " ++ f
+               dumpIRJson f (map (\(n, _, def) => (n, def)) namedDefs)
 
          whenJust (dumplifted sopts) $ \ f =>
             do coreLift $ putStrLn $ "Dumping lambda lifted defs to " ++ f
