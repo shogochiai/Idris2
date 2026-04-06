@@ -1,0 +1,5 @@
+Dumping canonical paths as JSON to Main.paths
+Main.partialMaybe Main.partialMaybe#p0 Just ReachableObligation reached_clause
+Main.partialMaybe Main.partialMaybe#p1 default UserAdmittedPartialGap partial_gap
+Main.safeHead Main.safeHead#p0 Nil ReachableObligation reached_clause
+Main.safeHead Main.safeHead#p1 :: ReachableObligation reached_clause

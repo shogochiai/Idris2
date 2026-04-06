@@ -202,6 +202,7 @@ data ExtPrim = NewIORef | ReadIORef | WriteIORef
              | NewArray | ArrayGet | ArraySet
              | GetField | SetField
              | SysOS | SysCodegen
+             | RecordPathHit
              | OnCollect
              | OnCollectAny
              | Unknown Name
@@ -218,6 +219,7 @@ Show ExtPrim where
   show SetField = "SetField"
   show SysOS = "SysOS"
   show SysCodegen = "SysCodegen"
+  show RecordPathHit = "RecordPathHit"
   show OnCollect = "OnCollect"
   show OnCollectAny = "OnCollectAny"
   show (Unknown n) = "Unknown " ++ show n
@@ -235,8 +237,25 @@ toPrim pn@(NS _ n)
             (n == UN (Basic "prim__setField"), SetField),
             (n == UN (Basic "prim__os"), SysOS),
             (n == UN (Basic "prim__codegen"), SysCodegen),
+            (n == UN (Basic "prim__recordPathHit"), RecordPathHit),
             (n == UN (Basic "prim__onCollect"), OnCollect),
             (n == UN (Basic "prim__onCollectAny"), OnCollectAny)
+            ]
+           (Unknown pn)
+toPrim pn@(UN n)
+    = cond [(n == Basic "prim__newIORef", NewIORef),
+            (n == Basic "prim__readIORef", ReadIORef),
+            (n == Basic "prim__writeIORef", WriteIORef),
+            (n == Basic "prim__newArray", NewArray),
+            (n == Basic "prim__arrayGet", ArrayGet),
+            (n == Basic "prim__arraySet", ArraySet),
+            (n == Basic "prim__getField", GetField),
+            (n == Basic "prim__setField", SetField),
+            (n == Basic "prim__os", SysOS),
+            (n == Basic "prim__codegen", SysCodegen),
+            (n == Basic "prim__recordPathHit", RecordPathHit),
+            (n == Basic "prim__onCollect", OnCollect),
+            (n == Basic "prim__onCollectAny", OnCollectAny)
             ]
            (Unknown pn)
 toPrim pn = Unknown pn
@@ -656,6 +675,10 @@ parameters (constants : SortedSet Name)
                                          ++ !(schExp i val) ++ ")"
   schExtCommon i SysOS []
       = pure $ "(blodwen-os)"
+  schExtCommon i RecordPathHit [NmPrimVal _ (Str pathId)]
+      = pure $ "(begin (blodwen-record-path-hit " ++ showB pathId ++ ") 0)"
+  schExtCommon i RecordPathHit [arg]
+      = pure $ "(begin (blodwen-record-path-hit " ++ !(schExp i arg) ++ ") 0)"
   schExtCommon i (Unknown n) args
       = throw (InternalError ("Can't compile unknown external primitive " ++ show n))
   schExtCommon i prim args

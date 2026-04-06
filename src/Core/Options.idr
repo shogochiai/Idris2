@@ -1,6 +1,7 @@
 module Core.Options
 
 import Core.Core
+import Core.Name.Namespace
 import public Core.Options.Log
 import Core.TT
 
@@ -178,6 +179,9 @@ record Session where
   debugElabCheck : Bool -- do conversion check to verify results of elaborator
   dumpcases : Maybe String -- file to output compiled case trees
   dumpcasesjson : Maybe String -- file to output compiled case trees as structured JSON
+  dumppathsjson : Maybe String -- file to output canonical intrafunction paths as structured JSON
+  dumppathshits : Maybe String -- file to output runtime path hits
+  pathCoverageModules : List ModuleIdent -- package modules relevant to path exports
   dumplifted : Maybe String -- file to output lambda lifted definitions
   dumpanf : Maybe String -- file to output ANF definitions
   dumpvmcode : Maybe String -- file to output VM code definitions
@@ -263,8 +267,8 @@ docsPPrint = MkPPOpts
 export
 defaultSession : Session
 defaultSession = MkSessionOpts False CoveringOnly False False Chez [] 1000 False False
-                               defaultLogLevel Nothing False Nothing Nothing Nothing
-                               Nothing Nothing False 1 False False True
+                               defaultLogLevel Nothing False Nothing Nothing Nothing Nothing
+                               [] Nothing Nothing Nothing False 1 False False True
                                False [] False False
 
 export

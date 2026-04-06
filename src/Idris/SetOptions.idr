@@ -498,6 +498,12 @@ preOptions (DumpCases f :: opts)
 preOptions (DumpCasesJSON f :: opts)
     = do setSession ({ dumpcasesjson := Just f } !getSession)
          preOptions opts
+preOptions (DumpPathsJSON f :: opts)
+    = do setSession ({ dumppathsjson := Just f } !getSession)
+         preOptions opts
+preOptions (DumpPathHits f :: opts)
+    = do setSession ({ dumppathshits := Just f } !getSession)
+         preOptions opts
 preOptions (DumpLifted f :: opts)
     = do setSession ({ dumplifted := Just f } !getSession)
          preOptions opts
