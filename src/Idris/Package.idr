@@ -457,6 +457,14 @@ processOptions (Just (fc, opts))
                 | Left err => throw (GenericMsg fc err)
          ignore $ preOptions clopts
 
+setPathCoverageModules : {auto c : Ref Ctxt Defs} -> PkgDesc -> Core ()
+setPathCoverageModules pkg
+    = do sopts <- getSession
+         let pkgMods = maybe (map fst (modules pkg))
+                             (\m => fst m :: map fst (modules pkg))
+                             (mainmod pkg)
+         setSession ({ pathCoverageModules := nub pkgMods } sopts)
+
 compileMain : {auto c : Ref Ctxt Defs} ->
               {auto s : Ref Syn SyntaxInfo} ->
               {auto o : Ref ROpts REPLOpts} ->
@@ -498,6 +506,7 @@ prepareCompilation pkg opts =
     withWarnings $ addDeps pkg
 
     ignore $ preOptions opts
+    setPathCoverageModules pkg
 
     runScript (prebuild pkg)
 
@@ -1018,6 +1027,8 @@ partitionOpts opts = foldr pOptUpdate (MkPFR [] [] False) opts
     optType (DumpANF f)            = POpt
     optType (DumpCases f)          = POpt
     optType (DumpCasesJSON f)      = POpt
+    optType (DumpPathsJSON f)      = POpt
+    optType (DumpPathHits f)       = POpt
     optType (DumpLifted f)         = POpt
     optType (DumpVMCode f)         = POpt
     optType DebugElabCheck         = POpt
@@ -1051,6 +1062,8 @@ errorMsg = unlines
   , "    --log <log level>"
   , "    --dumpcases <file>"
   , "    --dumpcases-json <file>"
+  , "    --dumppaths-json <file>"
+  , "    --dumppathshits <file>"
   , "    --dumplifted <file>"
   , "    --dumpvmcode <file>"
   , "    --debug-elab-check"

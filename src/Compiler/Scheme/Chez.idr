@@ -475,12 +475,22 @@ collectRequestHandler = """
                    gen]))))]))))
   """
 
+pathHitSupport : Maybe String -> Builder
+pathHitSupport Nothing = ""
+pathHitSupport (Just hitsFile) =
+  "(define blodwen-path-hit-port (open-output-file " ++ showB hitsFile ++ " 'append))\n"
+  ++ "(define (blodwen-record-path-hit path-id)\n"
+  ++ "  (display path-id blodwen-path-hit-port)\n"
+  ++ "  (newline blodwen-path-hit-port)\n"
+  ++ "  (flush-output-port blodwen-path-hit-port))\n"
+
 ||| Compile a TT expression to Chez Scheme
 compileToSS : Ref Ctxt Defs ->
               Bool -> -- profiling
               String -> ClosedTerm -> (outfile : String) -> Core ()
 compileToSS c prof appdir tm outfile
     = do ds <- getDirectives Chez
+         let pathHitsFile = dumppathshits !getSession
          libs <- findLibs ds
          traverse_ copyLib libs
          cdata <- getCompileData False Cases tm
@@ -506,6 +516,7 @@ compileToSS c prof appdir tm outfile
          let scm = concat $ the (List _)
                    [ schHeader chez (map snd libs ++ loadlibs) True
                    , fromString support
+                   , pathHitSupport pathHitsFile
                    , fromString extraRuntime
                    , code
                    , collectRequestHandler ++ "\n"
@@ -541,6 +552,7 @@ compileToSSInc : Ref Ctxt Defs ->
                  String -> ClosedTerm -> (outfile : String) -> Core ()
 compileToSSInc c mods libs appdir tm outfile
     = do chez <- coreLift findChez
+         let pathHitsFile = dumppathshits !getSession
          tmcexp <- compileTerm tm
          let ctm = forget tmcexp
 
@@ -552,6 +564,7 @@ compileToSSInc c mods libs appdir tm outfile
 
          let scm = schHeader chez [] False ++
                    fromString support ++
+                   pathHitSupport pathHitsFile ++
                    concat loadlibs ++
                    concat loadsos ++
                    collectRequestHandler ++ "\n" ++

@@ -10,6 +10,8 @@ import Compiler.Opts.CSE
 import Compiler.VMCode
 
 import Core.Binary.Prims
+import Core.Case.CaseTree
+import Core.Context
 import Core.Directory
 import Core.TTC
 
@@ -232,6 +234,36 @@ fullShowName : Name -> String
 fullShowName (DN _ n) = show n
 fullShowName n = show n
 
+allUpperBranchLabel : String -> Bool
+allUpperBranchLabel str =
+  let chars = unpack str in
+  any isAsciiUpper chars && all isUpperLabelChar chars
+  where
+    isAsciiUpper : Char -> Bool
+    isAsciiUpper c = c >= 'A' && c <= 'Z'
+
+    isUpperLabelChar : Char -> Bool
+    isUpperLabelChar c = isAsciiUpper c || (c >= '0' && c <= '9') || c == '_'
+
+titleCaseBranchLabel : String -> String
+titleCaseBranchLabel str = pack (go True (unpack str))
+  where
+    toLowerAscii : Char -> Char
+    toLowerAscii c = if c >= 'A' && c <= 'Z'
+                        then chr (ord c + ord 'a' - ord 'A')
+                        else c
+
+    go : Bool -> List Char -> List Char
+    go _ [] = []
+    go newWord ('_' :: cs) = go True cs
+    go True (c :: cs) = c :: go False cs
+    go False (c :: cs) = toLowerAscii c :: go False cs
+
+branchLabelForName : Name -> String
+branchLabelForName n =
+  let short = nameRoot n in
+  if allUpperBranchLabel short then titleCaseBranchLabel short else short
+
 fcToMaybeString : FC -> Maybe String
 fcToMaybeString fc =
   let rendered = show fc
@@ -354,7 +386,7 @@ mutual
   collectConAltNodes _ _ _ nextCase [] = ([], nextCase)
   collectConAltNodes functionName caseIdx branchIdx nextCase (MkNConAlt conName _ _ _ body :: rest) =
     let origin = originFromBranchExp body
-        branchNode = nodeJson functionName caseIdx branchIdx (show conName) origin Nothing
+        branchNode = nodeJson functionName caseIdx branchIdx (branchLabelForName conName) origin Nothing
         (nested, next1) = collectStructuredNodes functionName nextCase body
         (restNodes, next2) = collectConAltNodes functionName caseIdx (S branchIdx) next1 rest
     in (branchNode :: nested ++ restNodes, next2)
@@ -399,6 +431,316 @@ dumpIRJson fn lns
          Right () <- coreLift $ writeFile fn payload
                | Left err => throw (FileErr fn err)
          pure ()
+
+record PathTerminal where
+  constructor MkPathTerminal
+  classification : String
+  terminalKind : String
+  terminalOrigin : String
+  terminalClauseId : Maybe Int
+  terminalMessage : Maybe String
+
+record PathResult where
+  constructor MkPathResult
+  terminal : PathTerminal
+  steps : List String
+
+pathTerminalFromCrashOrigin : String -> String -> PathTerminal
+pathTerminalFromCrashOrigin "compiler_partial_completion" msg =
+  MkPathTerminal "UserAdmittedPartialGap" "partial_gap"
+                 "compiler_partial_completion" Nothing (Just msg)
+pathTerminalFromCrashOrigin "optimizer_artifact" msg =
+  MkPathTerminal "CompilerInsertedArtifact" "artifact"
+                 "optimizer_artifact" Nothing (Just msg)
+pathTerminalFromCrashOrigin "no_clause_body" msg =
+  MkPathTerminal "UserAdmittedPartialGap" "partial_gap"
+                 "no_clause_body" Nothing (Just msg)
+pathTerminalFromCrashOrigin _ msg =
+  MkPathTerminal "UnknownClassification" "unknown"
+                 "unknown" Nothing (Just msg)
+
+collectTermArgs : Term vars -> (Term vars, List (Term vars))
+collectTermArgs tm = go tm []
+  where
+    go : Term vars -> List (Term vars) -> (Term vars, List (Term vars))
+    go (App _ fn arg) args = go fn (arg :: args)
+    go head args = (head, args)
+
+crashMessageFromTerm : Term vars -> Maybe String
+crashMessageFromTerm tm =
+  let (head, args) = collectTermArgs tm in
+  case head of
+       Ref _ _ n =>
+         if nameRoot n == "prim__crash"
+            then case reverse args of
+                      PrimVal _ (Str msg) :: _ => Just msg
+                      _ => Nothing
+            else Nothing
+       _ => Nothing
+
+pathTerminalForLeaf : CaseTree vars -> PathTerminal
+pathTerminalForLeaf (STerm clauseId tm) =
+  case crashMessageFromTerm tm of
+       Just msg => pathTerminalFromCrashOrigin (originFromCrashMessage msg) msg
+       Nothing =>
+         MkPathTerminal "ReachableObligation" "reached_clause"
+                        "user_clause" (Just clauseId) Nothing
+pathTerminalForLeaf Impossible =
+  MkPathTerminal "LogicallyUnreachable" "impossible"
+                 "impossible_clause" Nothing Nothing
+pathTerminalForLeaf (Unmatched msg) =
+  pathTerminalFromCrashOrigin (originFromCrashMessage msg) msg
+pathTerminalForLeaf _ =
+  MkPathTerminal "UnknownClassification" "unknown"
+                 "unknown" Nothing Nothing
+
+stepJson : String -> Nat -> Nat -> String -> String -> Maybe String -> String
+stepJson functionName caseIdx branchIdx branchLabel origin sourceSpan =
+  jsonObject $
+    [ jsonField "node_id" (jsonString (functionName ++ "#" ++ show caseIdx ++ ":" ++ show branchIdx))
+    , jsonField "case_index" (show caseIdx)
+    , jsonField "branch_index" (show branchIdx)
+    , jsonField "branch_label" (jsonString branchLabel)
+    , jsonField "origin" (jsonString origin)
+    , jsonField "impossible_status" (jsonString (impossibleStatusFor origin))
+    , jsonField "partial_status" (jsonString (partialStatusFor origin))
+    , jsonField "backend_artifact_status" (jsonString (artifactStatusFor origin))
+    ] ++ maybe [] (\span => [jsonField "source_span" (jsonString span)]) sourceSpan
+
+branchOriginForSubtree : CaseTree vars -> String
+branchOriginForSubtree Impossible = "impossible_clause"
+branchOriginForSubtree (STerm _ tm) =
+  maybe "user_clause" originFromCrashMessage (crashMessageFromTerm tm)
+branchOriginForSubtree (Unmatched msg) = originFromCrashMessage msg
+branchOriginForSubtree _ = "user_clause"
+
+prependStep : String -> Nat -> Nat -> String -> String -> Maybe String -> PathResult -> PathResult
+prependStep functionName caseIdx branchIdx branchLabel origin sourceSpan (MkPathResult terminal steps) =
+  let step = stepJson functionName caseIdx branchIdx branchLabel origin sourceSpan
+  in MkPathResult terminal (step :: steps)
+
+mutual
+  collectPathResults : String -> Nat -> CaseTree vars -> (List PathResult, Nat)
+  collectPathResults functionName nextCase (Case _ _ scTy alts) =
+    let caseIdx = nextCase
+        sourceSpan = fcToMaybeString (getLoc scTy)
+    in collectAltPathResults functionName caseIdx 0 (S nextCase) sourceSpan alts
+  collectPathResults functionName nextCase leaf =
+    ([MkPathResult (pathTerminalForLeaf leaf) []], nextCase)
+
+  collectAltPathResults : String -> Nat -> Nat -> Nat -> Maybe String ->
+                          List (CaseAlt vars) -> (List PathResult, Nat)
+  collectAltPathResults _ _ _ nextCase _ [] = ([], nextCase)
+  collectAltPathResults functionName caseIdx branchIdx nextCase sourceSpan
+                        (ConCase conName _ _ subtree :: rest) =
+    let (here, next1) = collectPathResults functionName nextCase subtree
+        origin = branchOriginForSubtree subtree
+        here' = map (prependStep functionName caseIdx branchIdx (branchLabelForName conName) origin sourceSpan) here
+        (there, next2) = collectAltPathResults functionName caseIdx (S branchIdx) next1 sourceSpan rest
+    in (here' ++ there, next2)
+  collectAltPathResults functionName caseIdx branchIdx nextCase sourceSpan
+                        (DelayCase _ _ subtree :: rest) =
+    let (here, next1) = collectPathResults functionName nextCase subtree
+        origin = branchOriginForSubtree subtree
+        here' = map (prependStep functionName caseIdx branchIdx "Delay" origin sourceSpan) here
+        (there, next2) = collectAltPathResults functionName caseIdx (S branchIdx) next1 sourceSpan rest
+    in (here' ++ there, next2)
+  collectAltPathResults functionName caseIdx branchIdx nextCase sourceSpan
+                        (ConstCase c subtree :: rest) =
+    let (here, next1) = collectPathResults functionName nextCase subtree
+        origin = branchOriginForSubtree subtree
+        here' = map (prependStep functionName caseIdx branchIdx (show c) origin sourceSpan) here
+        (there, next2) = collectAltPathResults functionName caseIdx (S branchIdx) next1 sourceSpan rest
+    in (here' ++ there, next2)
+  collectAltPathResults functionName caseIdx branchIdx nextCase sourceSpan
+                        (DefaultCase subtree :: rest) =
+    let (here, next1) = collectPathResults functionName nextCase subtree
+        origin = branchOriginForSubtree subtree
+        here' = map (prependStep functionName caseIdx branchIdx "default" origin sourceSpan) here
+        (there, next2) = collectAltPathResults functionName caseIdx (S branchIdx) next1 sourceSpan rest
+    in (here' ++ there, next2)
+
+pathResultJson : String -> Nat -> PathResult -> String
+pathResultJson functionName pathIdx (MkPathResult terminal steps) =
+  jsonObject $
+    [ jsonField "path_id" (jsonString (functionName ++ "#p" ++ show pathIdx))
+    , jsonField "classification" (jsonString (classification terminal))
+    , jsonField "terminal_kind" (jsonString (terminalKind terminal))
+    , jsonField "terminal_origin" (jsonString (terminalOrigin terminal))
+    , jsonField "path_length" (show (length steps))
+    , jsonField "steps" (jsonArray steps)
+    ] ++ maybe [] (\clauseId => [jsonField "terminal_clause_id" (show clauseId)]) (terminalClauseId terminal)
+      ++ maybe [] (\msg => [jsonField "terminal_message" (jsonString msg)]) (terminalMessage terminal)
+
+pathResultsJson : String -> Nat -> List PathResult -> List String
+pathResultsJson _ _ [] = []
+pathResultsJson functionName pathIdx (path :: rest) =
+  pathResultJson functionName pathIdx path :: pathResultsJson functionName (S pathIdx) rest
+
+functionPathsJson : {auto c : Ref Ctxt Defs} -> Name -> Core (Maybe String)
+functionPathsJson n =
+  do defs <- get Ctxt
+     Just gdef <- lookupCtxtExact n (gamma defs)
+          | Nothing => pure Nothing
+     case definition gdef of
+       PMDef _ _ _ treeRT _ =>
+         let functionName = fullShowName n
+         in do treeRTFull <- full (gamma defs) treeRT
+               let (paths, _) = collectPathResults functionName 0 treeRTFull
+               pure $ Just $ jsonObject
+                    [ jsonField "function_name" (jsonString functionName)
+                    , jsonField "paths" (jsonArray (pathResultsJson functionName 0 paths))
+                    ]
+       _ => pure Nothing
+
+collectFunctionPathsJson : {auto c : Ref Ctxt Defs} -> List Name -> Core (List String)
+collectFunctionPathsJson [] = pure []
+collectFunctionPathsJson (n :: ns) =
+  do here <- functionPathsJson n
+     there <- collectFunctionPathsJson ns
+     pure $ maybe there (\entry => entry :: there) here
+
+pathPartsFile : String -> String
+pathPartsFile fn = fn ++ ".parts"
+
+functionNameField : String
+functionNameField = "\"function_name\": \""
+
+extractFunctionNameEntry : String -> Maybe String
+extractFunctionNameEntry entry
+    = case findSubstring functionNameField entry of
+           Nothing => Nothing
+           Just start =>
+             let rest = substr (cast start + length functionNameField)
+                               (minus (minus (length entry) start) (length functionNameField))
+                               entry
+             in case span (/= '"') rest of
+                     (fn, _) => if fn == "" then Nothing else Just fn
+  where
+    findSubstring : String -> String -> Maybe Nat
+    findSubstring needle haystack = go 0
+      where
+        maxStart : Nat
+        maxStart = minus (length haystack) (length needle)
+
+        go : Nat -> Maybe Nat
+        go i = if i > maxStart
+                  then Nothing
+                  else if isPrefixOf needle (substr (cast i) (minus (length haystack) i) haystack)
+                          then Just i
+                          else go (S i)
+
+dedupeFunctionEntries : List String -> List String
+dedupeFunctionEntries = reverse . snd . foldl keep ([], [])
+  where
+    keep : (List String, List String) -> String -> (List String, List String)
+    keep (seen, acc) entry =
+      case extractFunctionNameEntry entry of
+           Just fn => if fn `elem` seen
+                         then (seen, acc)
+                         else (fn :: seen, entry :: acc)
+           Nothing => (seen, entry :: acc)
+
+writePathsJsonPayload : String -> List String -> Core ()
+writePathsJsonPayload fn functions
+    = do let payload =
+               jsonObject
+                 [ jsonField "compiler_version" (jsonString (showVersion False version))
+                 , jsonField "export_kind" (jsonString "canonical_intrafunction_paths")
+                 , jsonField "path_schema_version" (show 1)
+                 , jsonField "functions" (jsonArray functions)
+                 ]
+         Right () <- coreLift $ writeFile fn payload
+               | Left err => throw (FileErr fn err)
+         pure ()
+
+dumpPathsJson : {auto c : Ref Ctxt Defs} -> String -> List Name -> Core ()
+dumpPathsJson fn ns
+    = do functions <- collectFunctionPathsJson ns
+         writePathsJsonPayload fn functions
+
+appendPathsJsonParts : {auto c : Ref Ctxt Defs} -> String -> List Name -> Core ()
+appendPathsJsonParts fn ns
+    = do functions <- collectFunctionPathsJson ns
+         let partsFn = pathPartsFile fn
+         hasParts <- coreLift $ exists partsFn
+         existing <- if hasParts then Core.readFile partsFn else pure ""
+         let parts = nub $ filter (/= "") (lines existing ++ functions)
+         Core.writeFile partsFn (unlines parts)
+
+finalizePathsJson : {auto c : Ref Ctxt Defs} -> String -> List Name -> Core ()
+finalizePathsJson fn ns
+    = do functions <- collectFunctionPathsJson ns
+         let partsFn = pathPartsFile fn
+         hasParts <- coreLift $ exists partsFn
+         existing <- if hasParts then Core.readFile partsFn else pure ""
+         let parts = dedupeFunctionEntries $ filter (/= "") (lines existing ++ functions)
+         writePathsJsonPayload fn parts
+
+isSyntheticPathHelperName : Name -> Bool
+isSyntheticPathHelperName n = String.isInfixOf ".{" (fullShowName n)
+
+isCurrentModulePathName : {auto c : Ref Ctxt Defs} -> Namespace -> Name -> Core Bool
+isCurrentModulePathName current n
+    = do let False = isSyntheticPathHelperName n
+               | _ => pure False
+         let True = fst (splitNS n) `isParentOf` current
+               | False => pure False
+         defs <- get Ctxt
+         Just gdef <- lookupCtxtExact n (gamma defs)
+              | Nothing => pure False
+         case definition gdef of
+              PMDef {} => pure (multiplicity gdef /= erased)
+              _ => pure False
+
+currentModulePathNames : {auto c : Ref Ctxt Defs} -> Core (List Name)
+currentModulePathNames
+    = do defs <- get Ctxt
+         names <- allNames (gamma defs)
+         filterM (isCurrentModulePathName (currentNS defs)) names
+
+moduleOrigin : GlobalDef -> Maybe ModuleIdent
+moduleOrigin gdef
+    = do (PhysicalIdrSrc mod, _, _) <- isNonEmptyFC (location gdef)
+            | _ => Nothing
+         pure mod
+
+nameModuleMatches : List ModuleIdent -> Name -> Bool
+nameModuleMatches [] _ = False
+nameModuleMatches (mod :: mods) n =
+    let ns = fst (splitNS n)
+    in isParentOf ns (miAsNamespace mod) || nameModuleMatches mods n
+
+isPackagePathName : {auto c : Ref Ctxt Defs} -> List ModuleIdent -> Name -> Core Bool
+isPackagePathName [] _ = pure False
+isPackagePathName mods n
+    = do let False = isSyntheticPathHelperName n
+               | _ => pure False
+         defs <- get Ctxt
+         Just gdef <- lookupCtxtExact n (gamma defs)
+              | Nothing => pure False
+         case definition gdef of
+              PMDef {} =>
+                pure $ multiplicity gdef /= erased
+                    && (nameModuleMatches mods n
+                        || maybe False (`elem` mods) (moduleOrigin gdef))
+              _ => pure False
+
+currentPackagePathNames : {auto c : Ref Ctxt Defs} -> Core (List Name)
+currentPackagePathNames
+    = do sopts <- getSession
+         case pathCoverageModules sopts of
+              [] => pure []
+              mods =>
+                do defs <- get Ctxt
+                   names <- allNames (gamma defs)
+                   filterM (isPackagePathName mods) names
+
+export
+snapshotCurrentModulePathsJson : {auto c : Ref Ctxt Defs} -> String -> Core ()
+snapshotCurrentModulePathsJson fn
+    = do modulePathNs <- currentModulePathNames
+         appendPathsJsonParts fn modulePathNs
 
 
 export
@@ -446,6 +788,7 @@ getCompileDataWith exports doLazyAnnots phase_in tm_in
          let phase = foldl {t=List} (flip $ maybe id max) phase_in $
                        [ Cases <$ dumpcases sopts
                        , Cases <$ dumpcasesjson sopts
+                       , Cases <$ dumppathsjson sopts
                        , Lifted <$ dumplifted sopts
                        , ANF <$ dumpanf sopts
                        , VMCode <$ dumpvmcode sopts
@@ -542,6 +885,15 @@ getCompileDataWith exports doLazyAnnots phase_in tm_in
             do coreLift $ putStrLn $ "Dumping case trees as JSON to " ++ f
                dumpIRJson f (map (\(n, _, def) => (n, def)) namedDefs)
 
+         whenJust (dumppathsjson sopts) $ \ f =>
+            do packagePathNs <- currentPackagePathNames
+               modulePathNs <- currentModulePathNames
+               let pathNs = if isNil packagePathNs
+                               then if isNil modulePathNs then rcns else modulePathNs
+                               else packagePathNs
+               coreLift $ putStrLn $ "Dumping canonical paths as JSON to " ++ f
+               finalizePathsJson f pathNs
+
          whenJust (dumplifted sopts) $ \ f =>
             do coreLift $ putStrLn $ "Dumping lambda lifted defs to " ++ f
                dumpIR f lifted
@@ -622,6 +974,9 @@ getIncCompileData doLazyAnnots phase
          vmcode <- if phase >= VMCode
                       then logTime 2 "Get VM Code" $ pure (allDefs anf)
                       else pure []
+         sopts <- getSession
+         whenJust (dumppathsjson sopts) $ \ f =>
+            appendPathsJsonParts f rcns
          pure (MkCompileData (CErased emptyFC) [] namedDefs lifted anf vmcode)
 
 -- Some things missing from Prelude.File
