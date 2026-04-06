@@ -1,0 +1,40 @@
+. ../../testutils.sh
+rm -f Main.paths Main.paths.parts Main
+rm -rf build
+
+idris2 --dumppaths-json Main.paths -o Main Main.idr
+
+python3 - <<'PY'
+import json
+
+with open("Main.paths") as f:
+    data = json.load(f)
+
+rows = []
+want = {
+    "Main.case block in runTests",
+    "Main.safeHead",
+    "Main.useSafeHead",
+    "Main.runTests",
+    "Main.runMinimalTests",
+    "Main.runTrivialTest",
+    "Main.main",
+}
+for fn in data["functions"]:
+    if fn["function_name"] not in want:
+        continue
+    for path in fn["paths"]:
+        labels = ",".join(step["branch_label"] for step in path["steps"]) or "-"
+        rows.append(
+            (
+                fn["function_name"],
+                path["path_id"],
+                labels,
+                path["classification"],
+                path["terminal_kind"],
+            )
+        )
+
+for row in sorted(rows):
+    print(" ".join(row))
+PY
