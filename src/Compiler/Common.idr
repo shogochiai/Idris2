@@ -587,10 +587,10 @@ functionPathsJson n =
      Just gdef <- lookupCtxtExact n (gamma defs)
           | Nothing => pure Nothing
      case definition gdef of
-       PMDef _ _ _ treeRT _ =>
+       PMDef _ _ treeCT _ _ =>
          let functionName = fullShowName n
-         in do treeRTFull <- full (gamma defs) treeRT
-               let (paths, _) = collectPathResults functionName 0 treeRTFull
+         in do treeCTFull <- full (gamma defs) treeCT
+               let (paths, _) = collectPathResults functionName 0 treeCTFull
                pure $ Just $ jsonObject
                     [ jsonField "function_name" (jsonString functionName)
                     , jsonField "paths" (jsonArray (pathResultsJson functionName 0 paths))

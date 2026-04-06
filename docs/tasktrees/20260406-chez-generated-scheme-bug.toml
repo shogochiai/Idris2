@@ -1,0 +1,81 @@
+version = "1.0"
+id = "fix-chez-generated-scheme-unbound-symbols"
+title = "Fix Chez Generated-Scheme Unbound Symbol Bug"
+owner = "bob"
+created_at = 1775469600
+
+[metadata]
+priority = "critical"
+type = "bugfix"
+
+[root]
+id = "1"
+name = "Eliminate generated Chez unbound identifiers in forked Idris2 and restore hack-free builds"
+estimate = { hours = 8 }
+checkbox = "unchecked"
+
+[[root.acceptance]]
+description = "Hack-free clean build of build/exec/idris2 succeeds"
+verification = "cd /Users/bob/code/idrislang-idris2 && make /Users/bob/code/idrislang-idris2/build/exec/idris2"
+
+[[root.acceptance]]
+description = "Incremental rebuild succeeds without undefined Scheme symbols"
+verification = "cd /Users/bob/code/idrislang-idris2 && make /Users/bob/code/idrislang-idris2/build/exec/idris2 && make /Users/bob/code/idrislang-idris2/build/exec/idris2"
+
+[[root.acceptance]]
+description = "CoreCoverage exact path report works with hack-free compiler"
+verification = "cd /Users/bob/code/etherclaw && IDRIS2_BIN=/Users/bob/code/idrislang-idris2/build/exec/idris2 /Users/bob/code/idris2-magical-utils/pkgs/Idris2Coverage/build/exec/idris2-cov paths /tmp/idris2-cov-pathtests/demo.ipkg"
+
+[[subtask]]
+id = "1.1"
+parent = "1"
+name = "Create reproducible audit for undefined generated Scheme symbols"
+estimate = { minutes = 45 }
+checkbox = "unchecked"
+acceptance = [
+  { description = "Audit script reports missing references and nearby defines from generated .ss", verification = "test -x /Users/bob/code/idrislang-idris2/support/chez-audit-unbound-symbols.sh" }
+]
+
+[[subtask]]
+id = "1.2"
+parent = "1"
+name = "Trace linesHelp and go helper names through lowering, lambda lift, and Scheme codegen"
+dependencies = ["1.1"]
+estimate = { hours = 1, minutes = 30 }
+checkbox = "unchecked"
+acceptance = [
+  { description = "Trace identifies first stage where reference and definition names diverge", verification = "grep -q 'first divergence stage' /tmp/idris2-generated-scheme-trace.log" }
+]
+
+[[subtask]]
+id = "1.3"
+parent = "1"
+name = "Fix helper-name stability across TTC reuse, incremental builds, and final executable generation"
+dependencies = ["1.2"]
+estimate = { hours = 2, minutes = 30 }
+checkbox = "unchecked"
+acceptance = [
+  { description = "Generated idris2.ss has zero undefined symbols under audit", verification = "cd /Users/bob/code/idrislang-idris2 && support/chez-audit-unbound-symbols.sh build/exec/idris2_app/idris2.ss" }
+]
+
+[[subtask]]
+id = "1.4"
+parent = "1"
+name = "Add regression tests for local helper naming in package, clean, and incremental builds"
+dependencies = ["1.3"]
+estimate = { hours = 1, minutes = 30 }
+checkbox = "unchecked"
+acceptance = [
+  { description = "Regression test covers local recursive helper patterns like linesHelp and go", verification = "rg -n 'linesHelp|go helper|unbound symbol' /Users/bob/code/idrislang-idris2/tests" }
+]
+
+[[subtask]]
+id = "1.5"
+parent = "1"
+name = "Revalidate dumppaths-json and CoreCoverage exact path flow without hack wrapper"
+dependencies = ["1.3", "1.4"]
+estimate = { hours = 1, minutes = 15 }
+checkbox = "unchecked"
+acceptance = [
+  { description = "Hack-free exact path report shows admissible path coverage on sample project", verification = "cd /Users/bob/code/etherclaw && IDRIS2_BIN=/Users/bob/code/idrislang-idris2/build/exec/idris2 /Users/bob/code/idris2-magical-utils/pkgs/Idris2Coverage/build/exec/idris2-cov paths /tmp/idris2-cov-pathtests/demo.ipkg" }
+]
