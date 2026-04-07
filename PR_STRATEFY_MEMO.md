@@ -148,6 +148,69 @@ Current local evidence already includes:
 - CoreCoverage exact path report working against the built compiler
 - EvmCoverage and DfxCoverage package-level path report support
 - EtherClaw HardHarness integration for path-aware `steps=4`
+- repeated-count determinism on real packages:
+  - TheWorld: `998 functions / 1562 paths`
+  - TextDAO: `443 functions / 767 paths`
+  - both stable across repeated runs under the same conditions
+- EtherClaw full-package run completing:
+  - `6158 functions / 9785 paths`
+  - no swap usage in the measured successful run
+
+## Real-Package Stability Notes
+
+The current local implementation now supports stronger claims than before.
+
+### Deterministic counts under fixed conditions
+
+With the current append-only `.parts` handling and current-module name
+collection based on `toSave` rather than `allNames (gamma defs)`,
+repeated runs under the same conditions are stable.
+
+Observed local evidence:
+
+- TheWorld:
+  - run 1: `998 / 1562`
+  - run 2: `998 / 1562`
+  - run 3: `998 / 1562`
+  - content hash stable: `ed0fe06847e4257a`
+- TextDAO:
+  - run 1: `443 / 767`
+  - run 2: `443 / 767`
+  - run 3: `443 / 767`
+  - content hash stable: `a6c90e70c074f9d4`
+
+This matters because earlier local runs were drifting due to exporter
+bookkeeping, not because the case-tree path model itself was unstable.
+
+### Build status and artifact status are not identical
+
+For some packages, `--build --dumppaths-json` can still produce a valid
+`dumppaths-json` artifact even when the overall build command exits nonzero.
+
+Current confirmed case:
+
+- TextDAO exits with `rc = 1`
+- the `dumppaths-json` artifact is still emitted
+- repeated emitted content is stable across runs
+
+This behavior should be documented honestly for downstream users:
+
+- if the user wants "path artifact produced", they must check the file
+- if the user wants "whole package build succeeded", they must check the exit
+  status separately
+
+### Scaling evidence
+
+The current successful EtherClaw full run produced:
+
+- `6158 functions / 9785 paths`
+- `rc = 0`
+- measured max RSS about `2.30 GB`
+- `swaps = 0`
+
+This is important review evidence because it shows that the exporter is no
+longer obviously failing on a very large package solely due to path-export
+bookkeeping.
 
 ## Non-goals to State Explicitly
 

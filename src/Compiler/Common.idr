@@ -16,6 +16,7 @@ import Core.Directory
 import Core.TTC
 
 import Data.IOArray
+import Data.SortedMap as SortedMap
 import Data.String as String
 import Data.Vect
 import Libraries.Data.NameMap
@@ -577,8 +578,8 @@ pathResultsJson _ _ [] = []
 pathResultsJson functionName pathIdx (path :: rest) =
   pathResultJson functionName pathIdx path :: pathResultsJson functionName (S pathIdx) rest
 
-functionPathsJson : {auto c : Ref Ctxt Defs} -> Name -> Core (Maybe String)
-functionPathsJson n =
+functionPathEntry : {auto c : Ref Ctxt Defs} -> Name -> Core (Maybe (String, String))
+functionPathEntry n =
   do defs <- get Ctxt
      Just gdef <- lookupCtxtExact n (gamma defs)
           | Nothing => pure Nothing
@@ -587,17 +588,30 @@ functionPathsJson n =
          let functionName = fullShowName n
          in do treeCTFull <- full (gamma defs) treeCT
                let (paths, _) = collectPathResults functionName 0 treeCTFull
-               pure $ Just $ jsonObject
-                    [ jsonField "function_name" (jsonString functionName)
-                    , jsonField "paths" (jsonArray (pathResultsJson functionName 0 paths))
-                    ]
+               pure $ Just
+                    ( functionName
+                    , jsonObject
+                        [ jsonField "function_name" (jsonString functionName)
+                        , jsonField "paths" (jsonArray (pathResultsJson functionName 0 paths))
+                        ]
+                    )
        _ => pure Nothing
+
+functionPathsJson : {auto c : Ref Ctxt Defs} -> Name -> Core (Maybe String)
+functionPathsJson n = map (map snd) (functionPathEntry n)
 
 collectFunctionPathsJson : {auto c : Ref Ctxt Defs} -> List Name -> Core (List String)
 collectFunctionPathsJson [] = pure []
 collectFunctionPathsJson (n :: ns) =
   do here <- functionPathsJson n
      there <- collectFunctionPathsJson ns
+     pure $ maybe there (\entry => entry :: there) here
+
+collectFunctionPathEntries : {auto c : Ref Ctxt Defs} -> List Name -> Core (List (String, String))
+collectFunctionPathEntries [] = pure []
+collectFunctionPathEntries (n :: ns) =
+  do here <- functionPathEntry n
+     there <- collectFunctionPathEntries ns
      pure $ maybe there (\entry => entry :: there) here
 
 pathPartsFile : String -> String
@@ -631,15 +645,27 @@ extractFunctionNameEntry entry
                           else go (S i)
 
 dedupeFunctionEntries : List String -> List String
-dedupeFunctionEntries = reverse . snd . foldl keep ([], [])
+dedupeFunctionEntries = reverse . snd . foldl keep (SortedMap.empty, [])
   where
-    keep : (List String, List String) -> String -> (List String, List String)
+    keep : (SortedMap String (), List String) -> String -> (SortedMap String (), List String)
     keep (seen, acc) entry =
       case extractFunctionNameEntry entry of
-           Just fn => if fn `elem` seen
-                         then (seen, acc)
-                         else (fn :: seen, entry :: acc)
+           Just fn => case SortedMap.lookup fn seen of
+                           Just _ => (seen, acc)
+                           Nothing => (SortedMap.insert fn () seen, entry :: acc)
            Nothing => (seen, entry :: acc)
+
+collectMissingFunctionPathsJson : {auto c : Ref Ctxt Defs} ->
+                                  SortedMap String () -> List Name -> Core (List String)
+collectMissingFunctionPathsJson _ [] = pure []
+collectMissingFunctionPathsJson seen (n :: ns) =
+  do let fn = fullShowName n
+     rest <- collectMissingFunctionPathsJson seen ns
+     case SortedMap.lookup fn seen of
+          Just _ => pure rest
+          Nothing =>
+            do here <- functionPathsJson n
+               pure $ maybe rest (\entry => entry :: rest) here
 
 writePathsJsonPayload : String -> List String -> Core ()
 writePathsJsonPayload fn functions
@@ -661,31 +687,35 @@ dumpPathsJson fn ns
 
 appendPathsJsonParts : {auto c : Ref Ctxt Defs} -> String -> List Name -> Core ()
 appendPathsJsonParts fn ns
-    = do functions <- collectFunctionPathsJson ns
+    = do functions <- collectFunctionPathEntries ns
          let partsFn = pathPartsFile fn
-         hasParts <- coreLift $ exists partsFn
-         existing <- if hasParts then Core.readFile partsFn else pure ""
-         let parts = nub $ filter (/= "") (lines existing ++ functions)
-         Core.writeFile partsFn (unlines parts)
+         traverse_ (\(_, entry) =>
+                      do Right () <- coreLift $ appendFile partsFn (entry ++ "\n")
+                              | Left err => throw (FileErr partsFn err)
+                         pure ())
+                   functions
 
 finalizePathsJson : {auto c : Ref Ctxt Defs} -> String -> List Name -> Core ()
 finalizePathsJson fn ns
-    = do functions <- collectFunctionPathsJson ns
-         let partsFn = pathPartsFile fn
+    = do let partsFn = pathPartsFile fn
          hasParts <- coreLift $ exists partsFn
          existing <- if hasParts then Core.readFile partsFn else pure ""
-         let parts = dedupeFunctionEntries $ filter (/= "") (lines existing ++ functions)
-         writePathsJsonPayload fn parts
+         let parts = dedupeFunctionEntries $ filter (/= "") (lines existing)
+         let seen = foldl (\acc, entry =>
+                             case extractFunctionNameEntry entry of
+                                  Just fn => SortedMap.insert fn () acc
+                                  Nothing => acc)
+                          SortedMap.empty parts
+         missing <- collectMissingFunctionPathsJson seen ns
+         writePathsJsonPayload fn (parts ++ missing)
 
 isSyntheticPathHelperName : Name -> Bool
 isSyntheticPathHelperName n = String.isInfixOf ".{" (fullShowName n)
 
-isCurrentModulePathName : {auto c : Ref Ctxt Defs} -> Namespace -> Name -> Core Bool
-isCurrentModulePathName current n
+isCurrentModulePathName : {auto c : Ref Ctxt Defs} -> Name -> Core Bool
+isCurrentModulePathName n
     = do let False = isSyntheticPathHelperName n
                | _ => pure False
-         let True = fst (splitNS n) `isParentOf` current
-               | False => pure False
          defs <- get Ctxt
          Just gdef <- lookupCtxtExact n (gamma defs)
               | Nothing => pure False
@@ -696,8 +726,7 @@ isCurrentModulePathName current n
 currentModulePathNames : {auto c : Ref Ctxt Defs} -> Core (List Name)
 currentModulePathNames
     = do defs <- get Ctxt
-         names <- allNames (gamma defs)
-         filterM (isCurrentModulePathName (currentNS defs)) names
+         filterM isCurrentModulePathName (keys (toSave defs))
 
 moduleOrigin : GlobalDef -> Maybe ModuleIdent
 moduleOrigin gdef
