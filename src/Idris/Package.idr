@@ -464,6 +464,10 @@ processOptions (Just (fc, opts))
 setPathCoverageModules : {auto c : Ref Ctxt Defs} -> PkgDesc -> Core ()
 setPathCoverageModules pkg
     = do sopts <- getSession
+         whenJust (dumppathsjson sopts) $ \f =>
+           do Right () <- coreLift $ removeFile (f ++ ".parts")
+                  | Left _ => pure ()
+              pure ()
          let pkgMods = maybe (map fst (modules pkg))
                              (\m => fst m :: map fst (modules pkg))
                              (mainmod pkg)
