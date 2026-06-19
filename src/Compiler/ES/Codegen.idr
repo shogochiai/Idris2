@@ -574,6 +574,21 @@ jsPrim nm docs = case (dropAllNS nm, docs) of
       Left  _ =>
         throw $ InternalError $ "prim not implemented: prim__os"
 
+-- Path-coverage instrumentation (mirrors the Scheme backend's RecordPathHit).
+-- When the forked compiler is run with --dumppaths-json/--dumppathshits it injects
+-- prim__recordPathHit <pathId> at each canonical CaseTree path. The ES/react-native
+-- backend emits a call to a global hook so the SAME instrumentation works on a real
+-- device (Hermes/JSC): if globalThis.__idris2_recordPathHit is installed (the device
+-- harness sets it), the path id is recorded; otherwise it is a no-op returning 0, so
+-- a non-instrumented production bundle is unaffected. This is what makes DEVICE path
+-- coverage real: numerator = ids recorded while the View runs on the device,
+-- denominator = the dumppaths-json CaseTree paths (exclusions applied), exactly like
+-- the Chez/Scheme path coverage but traced on the device JS engine.
+  (UN (Basic "prim__recordPathHit"), [pathId]) =>
+    pure $ hcat
+      [ "((typeof globalThis!=='undefined'&&globalThis.__idris2_recordPathHit)?"
+      , "globalThis.__idris2_recordPathHit(", pathId, "):0,0)" ]
+
   _ => throw $ InternalError $ "prim not implemented: " ++ show nm
 
 --------------------------------------------------------------------------------
