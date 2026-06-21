@@ -22,6 +22,34 @@ data Args
     | EraseArgs Nat NatSet
     | Arity Nat
 
+pathHitPrim : Name
+pathHitPrim = UN (Basic "prim__recordPathHit")
+
+pathInstrumentationEnabled : {auto c : Ref Ctxt Defs} -> Core Bool
+pathInstrumentationEnabled = pure $ isJust (dumppathshits !getSession)
+
+pathFunctionName : {auto c : Ref Ctxt Defs} -> Name -> Core String
+pathFunctionName n = pure $ show !(getFullName n)
+
+pathIdFor : String -> Nat -> String
+pathIdFor fn pathIdx = fn ++ "#p" ++ show pathIdx
+
+wrapPathHit : FC -> String -> Nat -> CExp vars -> CExp vars
+wrapPathHit fc fn pathIdx body =
+  let binder = MN "__path_hit" (cast pathIdx) in
+      CLet fc binder NotInline
+        (CExtPrim fc pathHitPrim [CPrimVal fc (Str (pathIdFor fn pathIdx))])
+        (weaken body)
+
+instrumentLeaf : {auto c : Ref Ctxt Defs} ->
+                 Name -> Nat -> FC -> CExp vars -> Core (CExp vars, Nat)
+instrumentLeaf n nextPath fc body =
+  do enabled <- pathInstrumentationEnabled
+     if enabled
+        then do fn <- pathFunctionName n
+                pure (wrapPathHit fc fn nextPath body, S nextPath)
+        else pure (body, S nextPath)
+
 ||| Extract the number of arguments from a term, or return that it's
 ||| a newtype by a given argument position
 numArgs : Defs -> Term vars -> Core Args
@@ -319,13 +347,23 @@ mutual
                {auto c : Ref Ctxt Defs} ->
                Name -> CaseTree vars ->
                Core (CExp vars)
-  toCExpTree n alts@(Case _ x scTy (DelayCase ty arg sc :: rest))
+  toCExpTree n tree
+      = do enabled <- pathInstrumentationEnabled
+           if enabled
+              then pure (fst !(toCExpTreeTracked n 0 tree))
+              else toCExpTreeRaw n tree
+
+  toCExpTreeRaw : {vars : _} ->
+                  {auto c : Ref Ctxt Defs} ->
+                  Name -> CaseTree vars ->
+                  Core (CExp vars)
+  toCExpTreeRaw n alts@(Case _ x scTy (DelayCase ty arg sc :: rest))
       = let fc = getLoc scTy in
             pure $
               CLet fc arg YesInline (CForce fc LInf (CLocal (getLoc scTy) x)) $
               CLet fc ty YesInline (CErased fc)
                    !(toCExpTree n sc)
-  toCExpTree n alts
+  toCExpTreeRaw n alts
       = toCExpTree' n alts
 
   toCExpTree' : {vars : _} ->
@@ -360,6 +398,112 @@ mutual
       = pure $ CCrash emptyFC msg
   toCExpTree' n Impossible
       = pure $ CCrash emptyFC ("Impossible case encountered in " ++ show n)
+
+  conCasesTracked : {vars : _} ->
+                    {auto c : Ref Ctxt Defs} ->
+                    Name -> Nat -> List (CaseAlt vars) ->
+                    Core (List (CConAlt vars), Nat)
+  conCasesTracked n nextPath [] = pure ([], nextPath)
+  conCasesTracked {vars} n nextPath (ConCase x tag args sc :: ns)
+      = do defs <- get Ctxt
+           Just gdef <- lookupCtxtExact x (gamma defs)
+                | Nothing =>
+                     do xn <- getFullName x
+                        (sc', next1) <- toCExpTreeTracked n nextPath sc
+                        (ns', next2) <- conCasesTracked n next1 ns
+                        pure (MkConAlt xn TYCON Nothing args sc' :: ns', next2)
+           case definition gdef of
+                DCon _ arity (Just pos) => conCasesTracked n nextPath ns
+                _ => do xn <- getFullName x
+                        ci <- dconFlag xn
+                        let (args' ** sub)
+                            = mkDropSubst 0 (eraseArgs gdef) vars args
+                        (sc', next1) <- toCExpTreeTracked n nextPath sc
+                        (ns', next2) <- conCasesTracked n next1 ns
+                        let alt =
+                              if dcon (definition gdef)
+                                 then MkConAlt xn ci (Just tag) args' (shrinkCExp sub sc')
+                                 else MkConAlt xn ci Nothing args' (shrinkCExp sub sc')
+                        pure (alt :: ns', next2)
+    where
+      dcon : Def -> Bool
+      dcon (DCon {}) = True
+      dcon _ = False
+  conCasesTracked n nextPath (_ :: ns) = conCasesTracked n nextPath ns
+
+  constCasesTracked : {vars : _} ->
+                      {auto c : Ref Ctxt Defs} ->
+                      Name -> Nat -> List (CaseAlt vars) ->
+                      Core (List (CConstAlt vars), Nat)
+  constCasesTracked n nextPath [] = pure ([], nextPath)
+  constCasesTracked n nextPath (ConstCase WorldVal sc :: ns)
+      = constCasesTracked n nextPath ns
+  constCasesTracked n nextPath (ConstCase x sc :: ns)
+      = do (sc', next1) <- toCExpTreeTracked n nextPath sc
+           (ns', next2) <- constCasesTracked n next1 ns
+           pure (MkConstAlt x sc' :: ns', next2)
+  constCasesTracked n nextPath (_ :: ns) = constCasesTracked n nextPath ns
+
+  getDefTracked : {vars : _} ->
+                  {auto c : Ref Ctxt Defs} ->
+                  Name -> Nat -> List (CaseAlt vars) ->
+                  Core (Maybe (CExp vars), Nat)
+  getDefTracked n nextPath [] = pure (Nothing, nextPath)
+  getDefTracked n nextPath (DefaultCase sc :: ns)
+      = do (sc', next1) <- toCExpTreeTracked n nextPath sc
+           pure (Just sc', next1)
+  getDefTracked n nextPath (ConstCase WorldVal sc :: ns)
+      = do (sc', next1) <- toCExpTreeTracked n nextPath sc
+           pure (Just sc', next1)
+  getDefTracked n nextPath (_ :: ns) = getDefTracked n nextPath ns
+
+  toCExpTreeTracked : {vars : _} ->
+                      {auto c : Ref Ctxt Defs} ->
+                      Name -> Nat -> CaseTree vars ->
+                      Core (CExp vars, Nat)
+  toCExpTreeTracked n nextPath (Case _ x scTy (DelayCase ty arg sc :: rest))
+      = do (sc', next1) <- toCExpTreeTracked n nextPath sc
+           let fc = getLoc scTy
+           pure
+             ( CLet fc arg YesInline (CForce fc LInf (CLocal (getLoc scTy) x)) $
+               CLet fc ty YesInline (CErased fc) sc'
+             , next1
+             )
+  toCExpTreeTracked n nextPath tree = toCExpTreeTracked' n nextPath tree
+
+  toCExpTreeTracked' : {vars : _} ->
+                       {auto c : Ref Ctxt Defs} ->
+                       Name -> Nat -> CaseTree vars ->
+                       Core (CExp vars, Nat)
+  toCExpTreeTracked' n nextPath (Case _ x scTy alts@(ConCase _ _ _ _ :: _))
+      = let fc = getLoc scTy in
+            do casesAndNext <- conCasesTracked n nextPath alts
+               let (cases, next1) = casesAndNext
+               (def, next2) <- getDefTracked n next1 alts
+               if isNil cases
+                  then pure (fromMaybe (CErased fc) def, next2)
+                  else pure (CConCase fc (CLocal fc x) cases def, next2)
+  toCExpTreeTracked' n nextPath (Case _ x scTy alts@(DelayCase _ _ _ :: _))
+      = throw (InternalError "Unexpected DelayCase")
+  toCExpTreeTracked' n nextPath (Case _ x scTy alts@(ConstCase _ _ :: _))
+      = let fc = getLoc scTy in
+            do (cases, next1) <- constCasesTracked n nextPath alts
+               (def, next2) <- getDefTracked n next1 alts
+               if isNil cases
+                  then pure (fromMaybe (CErased fc) def, next2)
+                  else pure (CConstCase fc (CLocal fc x) cases def, next2)
+  toCExpTreeTracked' n nextPath (Case _ x scTy alts@(DefaultCase sc :: _))
+      = toCExpTreeTracked n nextPath sc
+  toCExpTreeTracked' n nextPath (Case _ x scTy [])
+      = instrumentLeaf n nextPath (getLoc scTy) $
+           CCrash (getLoc scTy) ("Missing case tree in " ++ show n)
+  toCExpTreeTracked' n nextPath (STerm _ tm)
+      = instrumentLeaf n nextPath (getLoc tm) !(toCExp n tm)
+  toCExpTreeTracked' n nextPath (Unmatched msg)
+      = instrumentLeaf n nextPath emptyFC (CCrash emptyFC msg)
+  toCExpTreeTracked' n nextPath Impossible
+      = instrumentLeaf n nextPath emptyFC
+           (CCrash emptyFC ("Impossible case encountered in " ++ show n))
 
 -- Need this for ensuring that argument list matches up to operator arity for
 -- builtins

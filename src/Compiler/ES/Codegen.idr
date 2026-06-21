@@ -572,6 +572,16 @@ jsPrim nm docs = case (dropAllNS nm, docs) of
       Left  _ =>
         throw $ InternalError $ "prim not implemented: prim__os"
 
+-- Runtime path-hit instrumentation hook (mirrors the Scheme backend).
+-- When the program is compiled with --dumppathshits, prim__recordPathHit
+-- <pathId> is injected at each canonical case-tree path. The emitted JS is a
+-- no-op unless a global hook globalThis.__idris2_recordPathHit is installed,
+-- so instrumented builds carry no runtime dependency by default.
+  (UN (Basic "prim__recordPathHit"), [pathId]) =>
+    pure $ hcat
+      [ "((typeof globalThis!=='undefined'&&globalThis.__idris2_recordPathHit)?"
+      , "globalThis.__idris2_recordPathHit(", pathId, "):0,0)" ]
+
   _ => throw $ InternalError $ "prim not implemented: " ++ show nm
 
 --------------------------------------------------------------------------------

@@ -83,6 +83,12 @@ should target this file (`CHANGELOG_NEXT`).
   intrafunction paths (per-clause branch paths with reachability and origin
   classification) as structured JSON. This gives external tooling a stable,
   backend-independent denominator for path-level analysis.
+* Added a `--dumppathshits <file>` flag that injects opt-in runtime path-hit
+  instrumentation at each canonical case-tree path. On the Chez backend the
+  recorded path ids are written to the given file; on the JavaScript backend a
+  `prim__recordPathHit` hook is emitted that is a no-op unless a global
+  `__idris2_recordPathHit` handler is installed. Combined with the
+  `--dumppaths-json` denominator this yields path-level execution coverage.
 
 ### Building/Packaging changes
 

@@ -1,0 +1,19 @@
+. ../../testutils.sh
+
+rm -f Main.paths Main.paths.parts Main.hits Main
+rm -rf build
+
+idris2 --dumppaths-json Main.paths --dumppathshits Main.hits -o Main Main.idr
+
+./build/exec/Main
+
+python3 - <<'PY'
+# Numerator: the path ids actually recorded while the program ran.
+with open("Main.hits") as f:
+    hits = sorted(set(line.strip() for line in f if line.strip()))
+for h in hits:
+    print(h)
+PY
+
+rm -f Main.paths Main.paths.parts Main.hits Main
+rm -rf build

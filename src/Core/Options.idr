@@ -179,6 +179,7 @@ record Session where
   debugElabCheck : Bool -- do conversion check to verify results of elaborator
   dumpcases : Maybe String -- file to output compiled case trees
   dumppathsjson : Maybe String -- file to output canonical intrafunction paths as structured JSON
+  dumppathshits : Maybe String -- file to output runtime path hits
   pathCoverageModules : List ModuleIdent -- package modules relevant to path exports
   dumplifted : Maybe String -- file to output lambda lifted definitions
   dumpanf : Maybe String -- file to output ANF definitions
@@ -266,7 +267,7 @@ export
 defaultSession : Session
 defaultSession = MkSessionOpts False CoveringOnly False False Chez [] 1000 False False
                                defaultLogLevel Nothing False Nothing
-                               Nothing []
+                               Nothing Nothing []
                                Nothing Nothing Nothing False 1 False False True
                                False [] False False
 
