@@ -3,6 +3,45 @@
 Records the strategy for upstreaming the local fork changes (dumpcases-json,
 dumppaths-json, runtime path hits, JS source maps) into idris-lang/Idris2.
 
+## STATUS (2026-06-21) — three clean branches ready, dumpcases-json dropped
+
+The split is done. Each branch is rebased onto current `origin/main`
+(`f33475d`), self-builds (exit 0), and passes its tests. dumpcases-json was
+dropped (early prototype, superseded by dumppaths-json, no dependents).
+
+| branch | head | base | size (3-dot) | tests | what |
+| --- | --- | --- | --- | --- | --- |
+| `upstream/dumppaths-json` | `cad06f40a` | origin/main | 14 files / +701 | dumppaths001/002 | `--dumppaths-json` (the lead PR) |
+| `upstream/path-hits` | `65e103aa5` | on top of dumppaths-json | +7 files / +243 | dumppathshits001 | `--dumppathshits` runtime instrumentation |
+| `upstream/es-source-map` | `7acc3fd59` | origin/main (independent) | 15 files / +589 | sourcemap001/002 | JS/Node source maps |
+
+Dependency graph:
+```
+origin/main
+├── upstream/dumppaths-json ──── upstream/path-hits
+└── upstream/es-source-map  (independent)
+dropped: dumpcases-json
+```
+
+Cross-contamination checked = 0 in all directions (no path-hits/sourcemap in
+dumppaths-json; no sourcemap in path-hits; no path-hits/dumppaths in source-map).
+
+The integration branch `feature/es-source-maps` still holds everything plus
+this memo (fork-only; never include this file in a PR branch).
+
+Verification highlights:
+- path-hits proven end-to-end on Chez: `--dumppaths-json` (denominator) +
+  `--dumppathshits` (numerator) → executed path ids recorded, coverage holds.
+- dumppaths001 `expected` had a phantom `partial_gap` line that never actually
+  emitted (confirmed on a pre-rebase build); fixed to match real behaviour.
+- PR-4 commit message originally claimed 5 tests; only sourcemap001/002 exist —
+  message corrected, PR-body footer stripped.
+- PR-3 ES/Codegen comments de-EtherClaw-ified (no react-native/Hermes/device/
+  coverage wording; presented as a generic runtime instrumentation hook).
+
+Remaining: push the three branches to the fork; optionally open a proposal
+issue before the compiler PRs (see §4).
+
 ## 0. Measurement axis (read this first)
 
 The fork branched from upstream at **`d83bc7d` (2026-01-10)** and upstream has
