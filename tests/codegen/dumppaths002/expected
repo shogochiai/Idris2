@@ -1,0 +1,10 @@
+Dumping canonical paths as JSON to Main.paths
+Main.case block in runTests Main.case block in runTests#p0 True ReachableObligation reached_clause
+Main.case block in runTests Main.case block in runTests#p1 False ReachableObligation reached_clause
+Main.main Main.main#p0 - ReachableObligation reached_clause
+Main.runMinimalTests Main.runMinimalTests#p0 - ReachableObligation reached_clause
+Main.runTests Main.runTests#p0 - ReachableObligation reached_clause
+Main.runTrivialTest Main.runTrivialTest#p0 - ReachableObligation reached_clause
+Main.safeHead Main.safeHead#p0 Nil ReachableObligation reached_clause
+Main.safeHead Main.safeHead#p1 :: ReachableObligation reached_clause
+Main.useSafeHead Main.useSafeHead#p0 - ReachableObligation reached_clause

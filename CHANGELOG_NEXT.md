@@ -79,6 +79,10 @@ should target this file (`CHANGELOG_NEXT`).
 * Removed `Borrowing` as a language extension.  This was never implemented in
   Idris2, so the only change is that `%language Borrowing` will now error rather
   than be accepted but do nothing.
+* Added a `--dumppaths-json <file>` flag that exports the compiler's canonical
+  intrafunction paths (per-clause branch paths with reachability and origin
+  classification) as structured JSON. This gives external tooling a stable,
+  backend-independent denominator for path-level analysis.
 
 ### Building/Packaging changes
 
