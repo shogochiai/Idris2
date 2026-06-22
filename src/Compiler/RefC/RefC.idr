@@ -551,6 +551,21 @@ mutual
         removeVars $ toList $ map varName args
         pure resultVar
 
+    -- Path-coverage instrumentation (`--dumppathshits`): CompileExpr injects
+    -- `prim__recordPathHit "<fn>#p<n>"` at each canonical CaseTree leaf. The arg is
+    -- the SAME path-id string the dumppaths-json denominator uses, so recording it at
+    -- runtime gives an identity-join numerator (no source-map / ordinal / span needed).
+    -- It is a bare `UN (Basic "prim__recordPathHit")` (not namespaced), like the ES
+    -- backend's `globalThis.__idris2_recordPathHit` hook. We emit a call to the C
+    -- support function `idris2_recordPathHit(char* pathId)` (provided by the WASM
+    -- coverage runtime); a non-instrumented build never reaches this branch.
+    cStatementsFromANF (AExtPrim fc _ (UN (Basic "prim__recordPathHit")) args) _ = do
+        emit fc "// path coverage hit"
+        case args of
+            [pathId] =>
+              pure $ "idris2_recordPathHit(((Idris2_String *)\{varName pathId})->str)"
+            _ => throw $ InternalError "[refc] prim__recordPathHit expects exactly one argument"
+
     cStatementsFromANF (AExtPrim fc _ p args) _ = do
         let prims : List String =
             ["prim__newIORef", "prim__readIORef", "prim__writeIORef", "prim__newArray",
