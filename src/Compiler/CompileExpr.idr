@@ -477,7 +477,22 @@ mutual
                        Core (CExp vars, Nat)
   toCExpTreeTracked' n nextPath (Case _ x scTy alts@(ConCase _ _ _ _ :: _))
       = let fc = getLoc scTy in
-            do casesAndNext <- conCasesTracked n nextPath alts
+            do -- A match on a NEWTYPE constructor is not a runtime branch: the
+               -- non-tracked path inlines it via getNewType (substituting the
+               -- scrutinee into the RHS). The tracked path MUST do the same.
+               -- Without this, conCasesTracked drops the newtype branch
+               -- (DCon .. (Just pos) => skip), cases becomes empty, and the whole
+               -- body collapses to CErased — e.g. a `record`/newtype projection
+               -- `f (MkT s) = s` compiles to `(lambda (a) 'erased)`, so callers
+               -- get `erased` where a real value is required (observed: a String
+               -- projection feeding `==`, crashing the instrumented test exe at
+               -- load — the flaky/zero path-coverage numerator). getNewType yields
+               -- a substituted RHS; instrument it as a single leaf so the hit id
+               -- stays in step with the static (collectPathResults) enumeration,
+               -- which likewise treats a newtype match as a pass-through leaf.
+               Nothing <- getNewType fc (CLocal fc x) n alts
+                   | Just def => instrumentLeaf n nextPath fc def
+               casesAndNext <- conCasesTracked n nextPath alts
                let (cases, next1) = casesAndNext
                (def, next2) <- getDefTracked n next1 alts
                if isNil cases
