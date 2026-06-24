@@ -603,20 +603,27 @@ boundaryPrimSubstrings =
   , ("idris2_openFile", "FileSystemIO")
   ]
 
--- Does this calling-convention list name an external boundary? Returns its tag.
-ccBoundary : List String -> Maybe String
+-- The boundary tag for a ForeignDef. A known primitive (popen2/...) maps to its
+-- precise tag; ANY OTHER %foreign maps to UnclassifiedForeign(<cc>) — NEVER to
+-- "no boundary". This is the soundness guarantee: every FFI hole is captured (a
+-- ForeignDef IS a hole by definition), so an unrecognised external call can never
+-- be silently mistaken for pure, harness-testable code. The cc string is carried
+-- so a new hole is visible and triageable, never lost.
+ccBoundary : List String -> String
 ccBoundary ccs =
-  let hit = find (\(sub, _) => any (String.isInfixOf sub) ccs) boundaryPrimSubstrings
-  in map snd hit
+  case find (\(sub, _) => any (String.isInfixOf sub) ccs) boundaryPrimSubstrings of
+    Just (_, tag) => tag
+    Nothing       => "UnclassifiedForeign(" ++ (case ccs of (c :: _) => c; [] => "?") ++ ")"
 
--- The boundary a single def directly opens (ForeignDef cc match), if any.
+-- The boundary a single def directly opens. A ForeignDef is ALWAYS a hole (its
+-- tag is precise or UnclassifiedForeign); a non-foreign def opens nothing here.
 directBoundary : {auto c : Ref Ctxt Defs} -> Name -> Core (Maybe String)
 directBoundary n =
   do defs <- get Ctxt
      Just gdef <- lookupCtxtExact n (gamma defs)
           | Nothing => pure Nothing
      case definition gdef of
-       ForeignDef _ ccs => pure (ccBoundary ccs)
+       ForeignDef _ ccs => pure (Just (ccBoundary ccs))
        _                => pure Nothing
 
 -- The strongest external boundary `n` transitively reaches (PureComputation = none),
