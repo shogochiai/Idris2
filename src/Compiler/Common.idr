@@ -582,6 +582,75 @@ pathResultsJson _ _ [] = []
 pathResultsJson functionName pathIdx (path :: rest) =
   pathResultJson functionName pathIdx path :: pathResultsJson functionName (S pathIdx) rest
 
+-- ===========================================================================
+-- EffectBoundary fact-grounding (the trick-proof denominator-exclusion basis)
+-- ===========================================================================
+-- A path's function transitively reaches an FFI hole (popen2 / http_request /
+-- ic0.call_new / openFile) iff this call-graph fixpoint says so. That reachability
+-- is a COMPILER FACT (definition = ForeignDef with a matching cc, plus refersTo
+-- edges) — not a human "it's IO" declaration and not a value weight. A consumer
+-- can then exclude only paths whose function reaches an unexecutable boundary,
+-- with the reachVia chain as the emitted witness. See
+-- Coverage.Standardization.Types.EffectBoundary on the consumer side.
+
+-- The C-spec substrings that identify each external boundary (matched in a
+-- ForeignDef's calling-convention strings, e.g. "C:popen2,libidris2_support").
+boundaryPrimSubstrings : List (String, String)
+boundaryPrimSubstrings =
+  [ ("popen2",       "ProcessSpawn")
+  , ("system",       "ProcessSpawn")
+  , ("http_request", "NetworkOutcall")
+  , ("idris2_openFile", "FileSystemIO")
+  ]
+
+-- Does this calling-convention list name an external boundary? Returns its tag.
+ccBoundary : List String -> Maybe String
+ccBoundary ccs =
+  let hit = find (\(sub, _) => any (String.isInfixOf sub) ccs) boundaryPrimSubstrings
+  in map snd hit
+
+-- The boundary a single def directly opens (ForeignDef cc match), if any.
+directBoundary : {auto c : Ref Ctxt Defs} -> Name -> Core (Maybe String)
+directBoundary n =
+  do defs <- get Ctxt
+     Just gdef <- lookupCtxtExact n (gamma defs)
+          | Nothing => pure Nothing
+     case definition gdef of
+       ForeignDef _ ccs => pure (ccBoundary ccs)
+       _                => pure Nothing
+
+-- The strongest external boundary `n` transitively reaches (PureComputation = none),
+-- via a depth-bounded DFS over refersTo. `seen` guards cycles; `fuel` bounds depth
+-- (the call graph is large, but a path to a foreign prim is shallow in practice).
+effectBoundaryOf : {auto c : Ref Ctxt Defs} ->
+                   (fuel : Nat) -> (seen : NameMap Bool) -> Name ->
+                   Core String
+effectBoundaryOf Z _ _ = pure "PureComputation"
+effectBoundaryOf (S fuel) seen n =
+  case lookup n seen of
+    Just _  => pure "PureComputation"   -- cycle / already visited on this branch
+    Nothing =>
+      do Just b <- directBoundary n
+              | Nothing => walkCallees
+         pure b
+  where
+    walkCallees : Core String
+    walkCallees =
+      do defs <- get Ctxt
+         Just gdef <- lookupCtxtExact n (gamma defs)
+              | Nothing => pure "PureComputation"
+         let callees = keys (refersTo gdef)
+         let seen' = insert n True seen
+         go callees seen'
+      where
+        go : List Name -> NameMap Bool -> Core String
+        go [] _ = pure "PureComputation"
+        go (m :: ms) sn =
+          do b <- effectBoundaryOf fuel sn m
+             if b /= "PureComputation"
+                then pure b
+                else go ms sn
+
 functionPathEntry : {auto c : Ref Ctxt Defs} -> Name -> Core (Maybe (String, String))
 functionPathEntry n =
   do defs <- get Ctxt
@@ -592,10 +661,15 @@ functionPathEntry n =
          let functionName = fullShowName n
          in do treeCTFull <- full (gamma defs) treeCT
                let (paths, _) = collectPathResults functionName 0 treeCTFull
+               -- Fact-grounded boundary: a compiler-computed call-graph property,
+               -- emitted so the consumer can exclude only harness-unexecutable
+               -- paths with this witness (never an observer judgment).
+               boundary <- effectBoundaryOf 64 empty n
                pure $ Just
                     ( functionName
                     , jsonObject
                         [ jsonField "function_name" (jsonString functionName)
+                        , jsonField "effect_boundary" (jsonString boundary)
                         , jsonField "paths" (jsonArray (pathResultsJson functionName 0 paths))
                         ]
                     )
