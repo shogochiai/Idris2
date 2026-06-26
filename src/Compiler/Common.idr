@@ -613,6 +613,22 @@ boundaryPrimSubstrings =
   -- the pure test harness — it would block forever waiting for input. Recognised
   -- interactive-input boundary (FileSystemIO class), not a benign console op.
   , ("idris2_stdin",     "FileSystemIO")
+  -- IC0 canister-host FFI: any %foreign linked against the IC0 system library
+  -- (`,libic0`) or the canister's stable-memory runtime (`,global_registry_runtime`)
+  -- is the canister's interface to the Internet Computer host — candid arg/result
+  -- buffers, keccak/sha256 host hashing, EVM-RPC HTTPS outcalls, t-ECDSA signing,
+  -- stable-memory read/grow, inter-canister calls. None of these symbols even exist
+  -- outside the deployed WASM (a native pure test cannot link `libic0`), so reaching
+  -- one is a recognised production-environment boundary the pure harness cannot drive
+  -- — exactly the popen2/http_request class, not an unrecognised hole. Keyed on the
+  -- linker-library cc suffix (a COMPILER FACT carried in the %foreign string), so a
+  -- new IC0 binding is captured automatically without per-symbol enumeration. Tagged
+  -- CanisterCall — the recognised, excludable canister-host boundary the coverage
+  -- standardization lib already knows (Coverage.Boundary.Canonical: dfx CanisterCall
+  -- excludable=True), so these reclassify to ExternalEffectBoundary (non-blocking),
+  -- not UnclassifiedForeign (claim-blocking Unknown).
+  , (",libic0",                    "CanisterCall")
+  , (",global_registry_runtime",   "CanisterCall")
   ]
 
 -- Benign foreign primitives that are TOTAL, DETERMINISTIC for coverage purposes,
