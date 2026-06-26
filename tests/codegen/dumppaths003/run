@@ -1,0 +1,26 @@
+. ../../testutils.sh
+
+rm -f Main.paths Main.paths.parts Main
+rm -rf build
+
+idris2 --dumppaths-json Main.paths -o Main Main.idr
+
+python3 - <<'PY'
+import json
+
+with open("Main.paths") as f:
+    data = json.load(f)
+
+# Only the Point field paths: exactly the (.x)/(.y) projections, never the plain
+# Main.Point.x / Main.Point.y selector wrappers.
+rows = []
+for fn in data["functions"]:
+    name = fn["function_name"]
+    if not name.startswith("Main.Point."):
+        continue
+    for path in fn["paths"]:
+        rows.append((name, path["path_id"], path["classification"]))
+
+for row in sorted(rows):
+    print(" ".join(row))
+PY

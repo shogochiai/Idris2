@@ -599,21 +599,82 @@ boundaryPrimSubstrings : List (String, String)
 boundaryPrimSubstrings =
   [ ("popen2",       "ProcessSpawn")
   , ("system",       "ProcessSpawn")
+  -- C:exit terminates the process — a harness-fatal, non-returning effect hole (a
+  -- test that actually reached it would kill the runner). Recognised process-control
+  -- boundary, not an unknown prim.
+  , ("exit",         "ProcessSpawn")
   , ("http_request", "NetworkOutcall")
-  , ("idris2_openFile", "FileSystemIO")
+  -- File-handle effects: opening, closing, and EOF-probing a real handle all touch
+  -- the filesystem the pure harness cannot. Recognised FileSystemIO boundary.
+  , ("idris2_openFile",  "FileSystemIO")
+  , ("idris2_closeFile", "FileSystemIO")
+  , ("idris2_eof",       "FileSystemIO")
+  -- A blocking stdin read (interactive daemon / MCP serve loops) cannot be driven by
+  -- the pure test harness — it would block forever waiting for input. Recognised
+  -- interactive-input boundary (FileSystemIO class), not a benign console op.
+  , ("idris2_stdin",     "FileSystemIO")
   ]
 
--- The boundary tag for a ForeignDef. A known primitive (popen2/...) maps to its
--- precise tag; ANY OTHER %foreign maps to UnclassifiedForeign(<cc>) — NEVER to
--- "no boundary". This is the soundness guarantee: every FFI hole is captured (a
--- ForeignDef IS a hole by definition), so an unrecognised external call can never
--- be silently mistaken for pure, harness-testable code. The cc string is carried
--- so a new hole is visible and triageable, never lost.
+-- Benign foreign primitives that are TOTAL, DETERMINISTIC for coverage purposes,
+-- and ALWAYS harness-executable: pure string machinery (scheme string-concat /
+-- string-unpack) and the libidris2_support shims the Chez/RefC runtime threads
+-- through ordinary pure-looking code (string marshalling, NULL checks, error
+-- strings, the buffered putStr the test harness itself runs). Reaching one of
+-- these opens NO untestable hole — the harness executes them on every test — so a
+-- path that transitively touches them must stay a ReachableObligation. This is
+-- still a COMPILER FACT keyed on the cc string (the prim is identified by name),
+-- not a human value-weight: the narrow soundness guarantee below is preserved for
+-- GENUINE effect holes (process / network / file / exit / clock / unrecognised).
+benignPrimSubstrings : List String
+benignPrimSubstrings =
+  [ "string-concat"
+  , "string-unpack"
+  , "idris2_putStr"
+  , "idris2_getString"
+  , "idris2_isNull"
+  , "idris2_strerror"
+  -- getenv / blodwen-arg(-count): total, harness-executable reads of the process
+  -- environment and command-line argv. Reading them opens no untestable hole — the
+  -- path runs (the test process has an env and an argv).
+  , "getenv"
+  , "blodwen-arg"
+  -- Standard OUTPUT stream handles (stdout/stderr) and the cwd read: console output
+  -- the test harness itself performs on every run (same class as idris2_putStr).
+  -- Getting the handle / reading cwd opens no untestable hole — the path runs.
+  -- (stdin is deliberately NOT here: a blocking input read is harness-unexecutable
+  -- and is classified as a recognised FileSystemIO boundary below.)
+  , "idris2_stdout"
+  , "idris2_stderr"
+  , "idris2_currentDirectory"
+  -- fflush: flushing a stream buffer is console-output housekeeping the harness runs
+  -- on every print; opens no untestable hole.
+  , "fflush"
+  -- idris2_free: runtime memory housekeeping with no observable effect; always runs.
+  , "idris2_free"
+  -- Clock reads: idris2_time / blodwen-clock-second / blodwen-is-time? return a
+  -- value on every call. Non-determinism of the VALUE does not make the PATH
+  -- untestable — the harness executes the call — so for path-reachability coverage
+  -- these are benign.
+  , "idris2_time"
+  , "blodwen-clock"
+  , "blodwen-is-time"
+  ]
+
+-- The boundary tag for a ForeignDef. A known effect primitive (popen2/...) maps to
+-- its precise tag; a known BENIGN primitive (string-concat/putStr/...) opens no
+-- hole and maps to PureComputation; ANY OTHER %foreign maps to
+-- UnclassifiedForeign(<cc>) — NEVER to "no boundary". This is the soundness
+-- guarantee: every UNRECOGNISED FFI hole is captured (a ForeignDef IS a hole by
+-- definition unless it is on the audited benign list), so a new external call can
+-- never be silently mistaken for pure, harness-testable code. The cc string is
+-- carried so a new hole is visible and triageable, never lost.
 ccBoundary : List String -> String
 ccBoundary ccs =
-  case find (\(sub, _) => any (String.isInfixOf sub) ccs) boundaryPrimSubstrings of
-    Just (_, tag) => tag
-    Nothing       => "UnclassifiedForeign(" ++ (case ccs of (c :: _) => c; [] => "?") ++ ")"
+  if any (\sub => any (String.isInfixOf sub) ccs) benignPrimSubstrings
+    then "PureComputation"
+    else case find (\(sub, _) => any (String.isInfixOf sub) ccs) boundaryPrimSubstrings of
+           Just (_, tag) => tag
+           Nothing       => "UnclassifiedForeign(" ++ (case ccs of (c :: _) => c; [] => "?") ++ ")"
 
 -- The boundary a single def directly opens. A ForeignDef is ALWAYS a hole (its
 -- tag is precise or UnclassifiedForeign); a non-foreign def opens nothing here.
@@ -797,10 +858,28 @@ finalizePathsJson fn ns
 isSyntheticPathHelperName : Name -> Bool
 isSyntheticPathHelperName n = String.isInfixOf ".{" (fullShowName n)
 
+||| A record field generates TWO defs: the plain selector `Ns.field`
+||| (`UN (Basic f)`) and the postfix-projection `Ns.(.field)` (`UN (Field f)`).
+||| The plain selector's body is just a thin wrapper that calls the projection, so
+||| EVERY path it has is also a path of the projection. Emitting both as separate
+||| path obligations double-counts the field AND — because real code reaches the
+||| projection through whichever surface syntax it used (postfix `r.field` lowers to
+||| the `(.field)` projection directly) — leaves the plain-selector copy structurally
+||| unreachable whenever the codebase only writes `r.field`. Treat the plain selector
+||| as a duplicate of its `(.field)` projection and drop it from the path-name set so
+||| each field contributes exactly one (the canonical projection) obligation.
+isRecordSelectorWrapper : {auto c : Ref Ctxt Defs} -> Name -> Core Bool
+isRecordSelectorWrapper (NS ns (UN (Basic f)))
+    = do defs <- get Ctxt
+         pure $ isJust !(lookupCtxtExact (NS ns (UN (Field f))) (gamma defs))
+isRecordSelectorWrapper _ = pure False
+
 isCurrentModulePathName : {auto c : Ref Ctxt Defs} -> Name -> Core Bool
 isCurrentModulePathName n
     = do let False = isSyntheticPathHelperName n
                | _ => pure False
+         False <- isRecordSelectorWrapper n
+              | _ => pure False
          defs <- get Ctxt
          Just gdef <- lookupCtxtExact n (gamma defs)
               | Nothing => pure False
@@ -823,13 +902,21 @@ nameModuleMatches : List ModuleIdent -> Name -> Bool
 nameModuleMatches [] _ = False
 nameModuleMatches (mod :: mods) n =
     let ns = fst (splitNS n)
-    in isParentOf ns (miAsNamespace mod) || nameModuleMatches mods n
+        mi = miAsNamespace mod
+    -- `isParentOf ns mi` keeps names whose namespace IS the module (plain defs and
+    -- record-selector wrappers `Mod.field`). But a record-field PROJECTION lives one
+    -- namespace DEEPER — `Mod.Record.(.field)` — so its namespace is a CHILD of the
+    -- module, not equal to it. Also accept that direction (`isParentOf mi ns`) so the
+    -- canonical `(.field)` projection is kept as a path obligation under its module.
+    in isParentOf ns mi || isParentOf mi ns || nameModuleMatches mods n
 
 isPackagePathName : {auto c : Ref Ctxt Defs} -> List ModuleIdent -> Name -> Core Bool
 isPackagePathName [] _ = pure False
 isPackagePathName mods n
     = do let False = isSyntheticPathHelperName n
                | _ => pure False
+         False <- isRecordSelectorWrapper n
+              | _ => pure False
          defs <- get Ctxt
          Just gdef <- lookupCtxtExact n (gamma defs)
               | Nothing => pure False
@@ -1002,9 +1089,12 @@ getCompileDataWith exports doLazyAnnots phase_in tm_in
          whenJust (dumppathsjson sopts) $ \ f =>
             do packagePathNs <- currentPackagePathNames
                modulePathNs <- currentModulePathNames
-               let pathNs = if isNil packagePathNs
+               let pathNs0 = if isNil packagePathNs
                                then if isNil modulePathNs then rcns else modulePathNs
                                else packagePathNs
+               -- Drop record-selector wrappers (the plain `Ns.field` duplicate of the
+               -- `Ns.(.field)` projection) so each field is one canonical obligation.
+               pathNs <- filterM (map not . isRecordSelectorWrapper) pathNs0
                coreLift $ putStrLn $ "Dumping canonical paths as JSON to " ++ f
                finalizePathsJson f pathNs
 
@@ -1090,7 +1180,8 @@ getIncCompileData doLazyAnnots phase
                       else pure []
          sopts <- getSession
          whenJust (dumppathsjson sopts) $ \ f =>
-            appendPathsJsonParts f rcns
+            do rcns' <- filterM (map not . isRecordSelectorWrapper) rcns
+               appendPathsJsonParts f rcns'
          pure (MkCompileData (CErased emptyFC) [] namedDefs lifted anf vmcode)
 
 -- Some things missing from Prelude.File

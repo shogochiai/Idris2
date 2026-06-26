@@ -377,8 +377,9 @@ options = [MkOpt ["--check", "-c"] [] [CheckOnly]
               Nothing, -- dump case trees as structured JSON to the given file
            MkOpt ["--dumppaths-json"] [Required "output file"] (\f => [DumpPathsJSON f])
               Nothing, -- dump canonical intrafunction paths as structured JSON
-           MkOpt ["--dumppathshits"] [Required "output file"] (\f => [DumpPathHits f])
-              Nothing, -- dump runtime path hits to the given file
+           MkOpt ["--dumppaths-hits", "--dumppathshits"] [Required "output file"] (\f => [DumpPathHits f])
+              Nothing, -- dump runtime path hits to the given file (--dumppathshits is a
+                       -- deprecated alias; the canonical name mirrors --dumppaths-json)
            MkOpt ["--dumplifted"] [Required "output file"] (\f => [DumpLifted f])
               Nothing, -- dump lambda lifted trees to the given file
            MkOpt ["--dumpanf"] [Required "output file"] (\f => [DumpANF f])

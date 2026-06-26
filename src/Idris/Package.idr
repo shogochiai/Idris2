@@ -1077,7 +1077,7 @@ errorMsg = unlines
   , "    --dumpcases <file>"
   , "    --dumpcases-json <file>"
   , "    --dumppaths-json <file>"
-  , "    --dumppathshits <file>"
+  , "    --dumppaths-hits <file>"
   , "    --dumplifted <file>"
   , "    --dumpvmcode <file>"
   , "    --debug-elab-check"
