@@ -490,14 +490,23 @@ pathHitSupport (Just hitsFile) =
   -- Writing on first-hit is bounded (one line per UNIQUE id — hundreds, not
   -- billions), needs no exit hook (survives libc exit()), and the flush is rare
   -- (only on a genuinely new id), so there is no per-traversal syscall storm.
+  -- The dedup key is `<label>\t<path-id>`, so the SAME path hit under two
+  -- different labels is written twice (once per label). `blodwen-enter-test` sets
+  -- the current label (an opaque grouping key a harness supplies via
+  -- System.Coverage.enterTest); it starts empty, so a program that never calls
+  -- enterTest writes plain `\t<path-id>` lines (a leading tab) — the numerator is
+  -- unchanged path-id-wise, just prefixed with an empty label.
   "(define blodwen-path-hit-table (make-hashtable string-hash string=?))\n"
+  ++ "(define blodwen-path-hit-label \"\")\n"
+  ++ "(define (blodwen-enter-test label) (set! blodwen-path-hit-label label) 0)\n"
   ++ "(define blodwen-path-hit-port (open-output-file " ++ showB hitsFile ++ " '(replace)))\n"
   ++ "(define (blodwen-record-path-hit path-id)\n"
-  ++ "  (unless (hashtable-ref blodwen-path-hit-table path-id #f)\n"
-  ++ "    (hashtable-set! blodwen-path-hit-table path-id #t)\n"
-  ++ "    (display path-id blodwen-path-hit-port)\n"
-  ++ "    (newline blodwen-path-hit-port)\n"
-  ++ "    (flush-output-port blodwen-path-hit-port)))\n"
+  ++ "  (let ([key (string-append blodwen-path-hit-label \"\\t\" path-id)])\n"
+  ++ "    (unless (hashtable-ref blodwen-path-hit-table key #f)\n"
+  ++ "      (hashtable-set! blodwen-path-hit-table key #t)\n"
+  ++ "      (display key blodwen-path-hit-port)\n"
+  ++ "      (newline blodwen-path-hit-port)\n"
+  ++ "      (flush-output-port blodwen-path-hit-port))))\n"
 
 ||| No-op: kept for call-site symmetry. The write-on-first-hit design in
 ||| pathHitSupport needs no pre-main install (it writes during execution and

@@ -1,0 +1,30 @@
+. ../../testutils.sh
+rm -f Main.paths Main.hits
+rm -rf build
+
+# Build with BOTH the static path denominator (--dumppaths-json) and the runtime
+# hit recorder (--dumppaths-hits). enterTest labels attribute each hit.
+idris2 --dumppaths-json Main.paths --dumppaths-hits Main.hits -o main Main.idr
+
+# Run it: runListTest labels "T_LIST" then hits listHead's cons path; runOptTest
+# labels "T_OPT" then hits fromOpt's just path.
+./build/exec/main
+
+# The hits file has "<label>\t<path-id>" lines. Show, for the two functions of
+# interest, which label each hit path is attributed to — proving attribution is
+# per-label and never crossed. We normalise via python for stable ordering.
+python3 - <<'PY'
+seen = []
+with open("Main.hits") as f:
+    for line in f:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        label, _, pathid = line.partition("\t")
+        # only the two functions under test
+        if pathid.startswith("Main.listHead#") or pathid.startswith("Main.fromOpt#"):
+            seen.append((label, pathid))
+
+for label, pathid in sorted(seen):
+    print(f"{label} {pathid}")
+PY

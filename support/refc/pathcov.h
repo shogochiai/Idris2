@@ -5,6 +5,7 @@
 #define IDRIS2_PATHCOV_H
 #include <stdint.h>
 void *idris2_recordPathHit(const char *pathId);
+void *idris2_enterTest(const char *label);
 uint32_t __dfxcov_path_hit_count(void);
 uint32_t __dfxcov_path_hit_saturated(void);
 void __dfxcov_reset_path_hits(void);

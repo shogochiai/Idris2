@@ -589,6 +589,15 @@ jsPrim nm docs = case (dropAllNS nm, docs) of
       [ "((typeof globalThis!=='undefined'&&globalThis.__idris2_recordPathHit)?"
       , "globalThis.__idris2_recordPathHit(", pathId, "):0,0)" ]
 
+  -- Path-coverage attribution: System.Coverage.enterTest sets the opaque label
+  -- subsequent hits are recorded under. Mirrors recordPathHit; the device harness
+  -- installs globalThis.__idris2_enterTest, else it is a no-op. (label, then the
+  -- %World token — enterTest is an IO action.)
+  (UN (Basic "prim__enterTest"), [label, world]) =>
+    pure $ hcat
+      [ "((typeof globalThis!=='undefined'&&globalThis.__idris2_enterTest)?"
+      , "globalThis.__idris2_enterTest(", label, "):0,0)" ]
+
   _ => throw $ InternalError $ "prim not implemented: " ++ show nm
 
 --------------------------------------------------------------------------------

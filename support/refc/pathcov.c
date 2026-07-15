@@ -41,6 +41,15 @@ static const char *idris2_pathcov_slots[IDRIS2_PATHCOV_CAPACITY] = {0};
 static uint32_t idris2_pathcov_count = 0;
 static uint32_t idris2_pathcov_saturated = 0;
 
+// Current attribution label (set by System.Coverage.enterTest → idris2_enterTest).
+// Recorded entries are keyed on "<label>\t<pathId>", so the SAME path hit under
+// two labels is stored twice. Empty by default → a program that never calls
+// enterTest records plain "\t<pathId>" (empty label), numerator unchanged.
+#ifndef IDRIS2_PATHCOV_LABEL_MAX
+#define IDRIS2_PATHCOV_LABEL_MAX 512
+#endif
+static char idris2_pathcov_label[IDRIS2_PATHCOV_LABEL_MAX] = "";
+
 static char idris2_pathcov_arena[IDRIS2_PATHCOV_ARENA_BYTES];
 static size_t idris2_pathcov_arena_used = 0;
 
@@ -66,22 +75,53 @@ static const char *idris2_pathcov_intern(const char *s, size_t len) {
   return dst;
 }
 
-// Record a path-id hit (idempotent per distinct id). Declared to return void*
-// so the RefC-generated `Idris2_Value * v = idris2_recordPathHit(...);` assignment
-// type-checks; the returned NULL is bound to a let and immediately discarded.
+// Set the current attribution label (idempotent; truncates to LABEL_MAX-1). The
+// return type mirrors idris2_recordPathHit: void* so the RefC-generated let-binding
+// type-checks. label==NULL clears to empty.
+void *idris2_enterTest(const char *label) {
+  if (label == NULL) {
+    idris2_pathcov_label[0] = '\0';
+    return NULL;
+  }
+  size_t len = strlen(label);
+  if (len >= IDRIS2_PATHCOV_LABEL_MAX) len = IDRIS2_PATHCOV_LABEL_MAX - 1;
+  memcpy(idris2_pathcov_label, label, len);
+  idris2_pathcov_label[len] = '\0';
+  return NULL;
+}
+
+// Record a path-id hit (idempotent per distinct "<label>\t<pathId>" key). Declared
+// to return void* so the RefC-generated `Idris2_Value * v = idris2_recordPathHit(...);`
+// assignment type-checks; the returned NULL is bound to a let and immediately
+// discarded. The key is built on the stack from the current label + a tab + the
+// path-id, then interned as a unit so the dump yields "<label>\t<pathId>" lines.
 void *idris2_recordPathHit(const char *pathId) {
   if (pathId == NULL) return NULL;
+  // Build "<label>\t<pathId>" into a stack buffer (falls back to heap-free
+  // truncation-safe sizing). label is bounded by LABEL_MAX; pathIds are short.
+  char key[IDRIS2_PATHCOV_LABEL_MAX + 1 + 256];
+  size_t llen = strlen(idris2_pathcov_label);
+  size_t plen = strlen(pathId);
+  if (llen + 1 + plen + 1 > sizeof(key)) {
+    // Oversized path-id: record saturation rather than overflow the key buffer.
+    idris2_pathcov_saturated = 1;
+    return NULL;
+  }
+  memcpy(key, idris2_pathcov_label, llen);
+  key[llen] = '\t';
+  memcpy(key + llen + 1, pathId, plen);
+  key[llen + 1 + plen] = '\0';
+
   uint32_t mask = IDRIS2_PATHCOV_CAPACITY - 1; // capacity must be power of two
   // If capacity is not a power of two, fall back to modulo.
   uint32_t cap = IDRIS2_PATHCOV_CAPACITY;
-  uint32_t h = idris2_pathcov_hash(pathId);
+  uint32_t h = idris2_pathcov_hash(key);
   uint32_t idx = ((cap & (cap - 1)) == 0) ? (h & mask) : (h % cap);
   for (uint32_t probe = 0; probe < cap; ++probe) {
     const char *cur = idris2_pathcov_slots[idx];
     if (cur == NULL) {
-      // Empty slot → first time we see this id. Intern + store.
-      size_t len = strlen(pathId);
-      const char *stored = idris2_pathcov_intern(pathId, len);
+      // Empty slot → first time we see this label/id pair. Intern + store.
+      const char *stored = idris2_pathcov_intern(key, llen + 1 + plen);
       if (stored == NULL) {
         // arena full; count as saturation but do not store.
         return NULL;
@@ -90,13 +130,13 @@ void *idris2_recordPathHit(const char *pathId) {
       idris2_pathcov_count += 1;
       return NULL;
     }
-    if (strcmp(cur, pathId) == 0) {
+    if (strcmp(cur, key) == 0) {
       // already recorded; idempotent.
       return NULL;
     }
     idx = (idx + 1) % cap;
   }
-  // Table full of distinct ids → saturated.
+  // Table full of distinct keys → saturated.
   idris2_pathcov_saturated = 1;
   return NULL;
 }
@@ -109,6 +149,7 @@ void __dfxcov_reset_path_hits(void) {
   idris2_pathcov_count = 0;
   idris2_pathcov_saturated = 0;
   idris2_pathcov_arena_used = 0;
+  idris2_pathcov_label[0] = '\0';
 }
 
 // Semicolon-separated dump of all recorded path-ids. The buffer is static; callers

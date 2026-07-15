@@ -566,6 +566,17 @@ mutual
               pure $ "idris2_recordPathHit(((Idris2_String *)\{varName pathId})->str)"
             _ => throw $ InternalError "[refc] prim__recordPathHit expects exactly one argument"
 
+    -- Path-coverage attribution (`--dumppathshits`): `System.Coverage.enterTest`
+    -- sets the current opaque label that subsequent path hits are recorded under.
+    -- Mirrors `prim__recordPathHit`; the label arg is followed by the %World token
+    -- (enterTest is an IO action, unlike the compiler-synthesized recordPathHit).
+    cStatementsFromANF (AExtPrim fc _ (UN (Basic "prim__enterTest")) args) _ = do
+        emit fc "// path coverage enter-test"
+        case args of
+            [label, world] =>
+              pure $ "idris2_enterTest(((Idris2_String *)\{varName label})->str)"
+            _ => throw $ InternalError "[refc] prim__enterTest expects a label and a world token"
+
     cStatementsFromANF (AExtPrim fc _ p args) _ = do
         let prims : List String =
             ["prim__newIORef", "prim__readIORef", "prim__writeIORef", "prim__newArray",
