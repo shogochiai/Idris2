@@ -430,7 +430,51 @@ getNewArgs {done = x :: xs} (_ :: sub) = x :: getNewArgs sub
 -- Annoyingly, the indices will need fixing up because the order in the top
 -- level definition goes left to right (i.e. first argument has lowest index,
 -- not the highest, as you'd expect if they were all lambdas).
+-- Float a leading `let` whose bound value does NOT mention the immediately
+-- following lambda's argument INTO that lambda's body, reassociating
+--   (let x = v in \y => body)   ==>   \y => (let x = weaken v in body)
+-- This is required for path-coverage instrumentation (--dumppathshits): the
+-- leaf path-hit recorder is emitted as `let __path_hit = recordHit in <body>`.
+-- When <body> is a function's world-lambda (e.g. `main : IO ()`), the leading
+-- let blocks `mergeLambdas` from absorbing that lambda into the top-level arg
+-- list, so the function keeps arity 0, returns the lambda un-applied, and the
+-- runtime never runs main's IO (only its CAF init) — the zero/flaky numerator
+-- bug. The path-hit value is closed (a string literal handed to recordHit), so
+-- floating it under the lambda is sound; recording on call rather than on
+-- closure-creation is also the more correct coverage semantics.
+-- Recognise ONLY the path-coverage hit-record let. Its bound value is a closed
+-- `prim__recordPathHit "<id>"` ExtPrim and the binder is never referenced (the
+-- side effect is the point; the bound `0` is discarded). Restricting to this
+-- exact shape is what makes the drop-and-reinsert in floatLetsThroughLams sound
+-- — a general `let x = v in \y => ...` may USE x, which we must not drop.
+isPathHitVal : CExp vars -> Bool
+isPathHitVal (CExtPrim _ (UN (Basic "prim__recordPathHit")) _) = True
+isPathHitVal _ = False
+
+floatLetsThroughLams : {vars : _} -> CExp vars -> CExp vars
+floatLetsThroughLams (CLet fc x inl val (CLam lfc y sc))
+    = if isPathHitVal val
+         then
+           -- Scopes:  let binds x over its body, so the inner lambda is in scope
+           --          (x :: vars), giving sc : CExp (y :: x :: vars).
+           -- Target:  CLam y (CLet x val' sc') in scope vars, with let body
+           --          sc' : CExp (x :: y :: vars).
+           -- val : CExp vars is closed wrt y → val' = weaken val : CExp (y::vars).
+           -- For sc we exchange the two outermost binders (y,x)→(x,y). The hit
+           -- binder x is UNUSED, so drop it (any stray ref → CErased, of which
+           -- there are none) then re-insert it outermost.
+           let val' : CExp (y :: vars) := weaken val
+               scNoX : CExp (y :: vars) := shrinkCExp (Keep (Drop Refl)) sc
+               sc'  : CExp (x :: y :: vars) := insertNames zero (mkSizeOf [x]) scNoX in
+               CLam lfc y (floatLetsThroughLams (CLet fc x inl val' sc'))
+         else CLet fc x inl val (CLam lfc y sc)
+floatLetsThroughLams exp = exp
+
 mergeLambdas : (args : Scope) -> CExp args -> (args' ** CExp args')
+mergeLambdas args exp@(CLet _ _ _ val (CLam _ _ _))
+    = if isPathHitVal val
+         then mergeLambdas args (floatLetsThroughLams exp)
+         else (args ** exp)
 mergeLambdas args (CLam fc x sc)
     = let (args' ** (s, env, exp')) = getLams zero 0 Subst.empty (CLam fc x sc)
           expNs = substs s env exp'

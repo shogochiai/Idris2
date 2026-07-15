@@ -136,6 +136,12 @@ data CLOpt
   Metadata String |
    ||| Dump cases before compiling
   DumpCases String |
+   ||| Dump cases as structured JSON before compiling
+  DumpCasesJSON String |
+   ||| Dump canonical intrafunction paths as structured JSON before compiling
+  DumpPathsJSON String |
+   ||| Dump runtime path hits while executing the generated program
+  DumpPathHits String |
    ||| Dump lambda lifted defs before compiling
   DumpLifted String |
    ||| Dump ANF defs before compiling
@@ -367,6 +373,13 @@ options = [MkOpt ["--check", "-c"] [] [CheckOnly]
               Nothing, -- dump metadata information from the given ttm file
            MkOpt ["--dumpcases"] [Required "output file"] (\f => [DumpCases f])
               Nothing, -- dump case trees to the given file
+           MkOpt ["--dumpcases-json"] [Required "output file"] (\f => [DumpCasesJSON f])
+              Nothing, -- dump case trees as structured JSON to the given file
+           MkOpt ["--dumppaths-json"] [Required "output file"] (\f => [DumpPathsJSON f])
+              Nothing, -- dump canonical intrafunction paths as structured JSON
+           MkOpt ["--dumppaths-hits", "--dumppathshits"] [Required "output file"] (\f => [DumpPathHits f])
+              Nothing, -- dump runtime path hits to the given file (--dumppathshits is a
+                       -- deprecated alias; the canonical name mirrors --dumppaths-json)
            MkOpt ["--dumplifted"] [Required "output file"] (\f => [DumpLifted f])
               Nothing, -- dump lambda lifted trees to the given file
            MkOpt ["--dumpanf"] [Required "output file"] (\f => [DumpANF f])

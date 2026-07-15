@@ -72,7 +72,8 @@ all:
 idris2-exec: ${TARGET}
 
 ${TARGET}: support src/IdrisPaths.idr
-	${IDRIS2_BOOT} --build ${IDRIS2_APP_IPKG}
+	IDRIS2_PATH=${IDRIS2_BOOT_PATH} IDRIS2_PREFIX=${IDRIS2_BOOT_PREFIX} \
+		${IDRIS2_BOOT} --build ${IDRIS2_APP_IPKG}
 	cp ${IDRIS2_SUPPORT_DIR}/${IDRIS2_SUPPORT} ${TARGETDIR}/${NAME}_app/${IDRIS2_SUPPORT}
 
 # We use FORCE to always rebuild IdrisPath so that the git SHA1 info is always up to date

@@ -475,12 +475,59 @@ collectRequestHandler = """
                    gen]))))]))))
   """
 
+pathHitSupport : Maybe String -> Builder
+pathHitSupport Nothing = ""
+pathHitSupport (Just hitsFile) =
+  -- WRITE-ON-FIRST-HIT, deduped via an in-memory hashtable. We append+flush a
+  -- path-id to the file the FIRST time it is hit, and never again. Two earlier
+  -- designs both failed:
+  --   1. append+flush PER hit → tens of GB + a syscall per traversal (a loop-
+  --      heavy suite wrote 19.7GB in 12min).
+  --   2. accumulate in memory, dump once at exit → the dump never ran, because
+  --      Idris2 `exitSuccess`/`exitFailure` call libc `exit()` directly, which
+  --      bypasses Chez's exit-handler AND any post-main code (verified: a 100-
+  --      test slice printed "Results:" but produced NO hits file).
+  -- Writing on first-hit is bounded (one line per UNIQUE id — hundreds, not
+  -- billions), needs no exit hook (survives libc exit()), and the flush is rare
+  -- (only on a genuinely new id), so there is no per-traversal syscall storm.
+  -- The dedup key is `<label>\t<path-id>`, so the SAME path hit under two
+  -- different labels is written twice (once per label). `blodwen-enter-test` sets
+  -- the current label (an opaque grouping key a harness supplies via
+  -- System.Coverage.enterTest); it starts empty, so a program that never calls
+  -- enterTest writes plain `\t<path-id>` lines (a leading tab) — the numerator is
+  -- unchanged path-id-wise, just prefixed with an empty label.
+  "(define blodwen-path-hit-table (make-hashtable string-hash string=?))\n"
+  ++ "(define blodwen-path-hit-label \"\")\n"
+  ++ "(define (blodwen-enter-test label) (set! blodwen-path-hit-label label) 0)\n"
+  ++ "(define blodwen-path-hit-port (open-output-file " ++ showB hitsFile ++ " '(replace)))\n"
+  ++ "(define (blodwen-record-path-hit path-id)\n"
+  ++ "  (let ([key (string-append blodwen-path-hit-label \"\\t\" path-id)])\n"
+  ++ "    (unless (hashtable-ref blodwen-path-hit-table key #f)\n"
+  ++ "      (hashtable-set! blodwen-path-hit-table key #t)\n"
+  ++ "      (display key blodwen-path-hit-port)\n"
+  ++ "      (newline blodwen-path-hit-port)\n"
+  ++ "      (flush-output-port blodwen-path-hit-port))))\n"
+
+||| No-op: kept for call-site symmetry. The write-on-first-hit design in
+||| pathHitSupport needs no pre-main install (it writes during execution and
+||| survives libc exit()). Emitting nothing here keeps pathHitSupport's
+||| defines-only invariant intact.
+pathHitInstall : Maybe String -> Builder
+pathHitInstall _ = ""
+
+||| No-op: write-on-first-hit means hits are already on disk by the time main
+||| ends; no post-main dump is needed (and it must not be, since libc exit()
+||| would skip it anyway). Kept as a no-op for call-site symmetry.
+pathHitDump : Maybe String -> Builder
+pathHitDump _ = ""
+
 ||| Compile a TT expression to Chez Scheme
 compileToSS : Ref Ctxt Defs ->
               Bool -> -- profiling
               String -> ClosedTerm -> (outfile : String) -> Core ()
 compileToSS c prof appdir tm outfile
     = do ds <- getDirectives Chez
+         let pathHitsFile = dumppathshits !getSession
          libs <- findLibs ds
          traverse_ copyLib libs
          cdata <- getCompileData False Cases tm
@@ -506,10 +553,13 @@ compileToSS c prof appdir tm outfile
          let scm = concat $ the (List _)
                    [ schHeader chez (map snd libs ++ loadlibs) True
                    , fromString support
+                   , pathHitSupport pathHitsFile
                    , fromString extraRuntime
                    , code
                    , collectRequestHandler ++ "\n"
+                   , pathHitInstall pathHitsFile
                    , main
+                   , pathHitDump pathHitsFile
                    , schFooter prof True
                    ]
          Right () <- coreLift $ writeFile outfile $ build scm
@@ -541,6 +591,7 @@ compileToSSInc : Ref Ctxt Defs ->
                  String -> ClosedTerm -> (outfile : String) -> Core ()
 compileToSSInc c mods libs appdir tm outfile
     = do chez <- coreLift findChez
+         let pathHitsFile = dumppathshits !getSession
          tmcexp <- compileTerm tm
          let ctm = forget tmcexp
 
@@ -552,10 +603,12 @@ compileToSSInc c mods libs appdir tm outfile
 
          let scm = schHeader chez [] False ++
                    fromString support ++
+                   pathHitSupport pathHitsFile ++
                    concat loadlibs ++
                    concat loadsos ++
                    collectRequestHandler ++ "\n" ++
-                   main ++ schFooter False False
+                   pathHitInstall pathHitsFile ++
+                   main ++ pathHitDump pathHitsFile ++ schFooter False False
 
          Right () <- coreLift $ writeFile outfile $ build scm
             | Left err => throw (FileErr outfile err)
