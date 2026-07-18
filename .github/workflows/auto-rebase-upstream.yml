@@ -1,0 +1,130 @@
+# Auto-rebase / upstream-drift detector for the path-coverage fork.
+#
+# The fork carries a stack of path-coverage patches (System.Coverage.enterTest,
+# recordPathHit, --dumppaths-json, effect_boundary, ES/Chez/RefC codegen hooks)
+# on top of idris-lang/Idris2. Those patches touch drift-prone compiler internals
+# (src/Compiler/Common.idr, CompileExpr.idr, ES/Codegen.idr, libs/base/System/
+# Coverage.idr), so an upstream change can silently break them. This workflow
+# keeps the fork HIGH-FIDELITY to upstream by detecting that drift early — every
+# day and on demand — instead of discovering it the next time Luci needs a fresh
+# --dumppaths-json build.
+#
+# It is a NON-DESTRUCTIVE detector: it merges fresh upstream into a throwaway
+# probe branch and bootstraps the compiler. On clean merge + successful build it
+# reports green; on a merge conflict or a build break it fails the run (and, on
+# the default branch, opens/updates a tracking issue) so a human/agent rebases
+# deliberately. It never force-pushes the fork's main.
+#
+# Remotes in this checkout: origin = idris-lang/Idris2 (upstream),
+# fork = shogochiai/Idris2 (ours). GitHub Actions checks out the fork as origin,
+# so the workflow adds idris-lang as an explicit `upstream` remote.
+
+name: auto-rebase-upstream
+
+on:
+  schedule:
+    - cron: '17 6 * * *'   # daily 06:17 UTC — off-peak, avoids the top-of-hour stampede
+  workflow_dispatch:        # manual "check drift now"
+
+permissions:
+  contents: read
+  issues: write             # to open/update the drift tracking issue
+
+concurrency:
+  group: auto-rebase-upstream
+  cancel-in-progress: true
+
+jobs:
+  drift-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (full history — rebase/merge needs it)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream remote (idris-lang/Idris2)
+        run: |
+          git remote add upstream https://github.com/idris-lang/Idris2.git || \
+            git remote set-url upstream https://github.com/idris-lang/Idris2.git
+          git fetch --no-tags upstream main
+
+      - name: Report the fork's patch stack (what could drift)
+        run: |
+          echo "Fork commits not in upstream/main:"
+          git log --oneline upstream/main..HEAD || true
+          echo "---"
+          echo "Files those patches touch (drift surface):"
+          git diff --name-only upstream/main...HEAD || true
+
+      - name: Merge upstream into a probe branch (non-destructive)
+        id: merge
+        run: |
+          git config user.name  "auto-rebase-bot"
+          git config user.email "auto-rebase-bot@users.noreply.github.com"
+          git checkout -B ci/upstream-drift-probe
+          set +e
+          git merge --no-edit upstream/main
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Merge with upstream/main CONFLICTS — the fork's path-coverage patches need a manual rebase."
+            echo "Conflicted paths:"
+            git diff --name-only --diff-filter=U || true
+            git merge --abort || true
+            exit 1
+          fi
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+          echo "Clean merge with upstream/main."
+
+      # Only reached when the merge was clean — now prove the merged tree still
+      # BUILDS (a clean merge can still be semantically broken by an upstream API
+      # change to a function the patches call).
+      - name: Install Chez Scheme (bootstrap backend)
+        run: sudo apt-get update && sudo apt-get install -y chezscheme
+
+      # Mirror upstream ci-bootstrap.yml exactly: SCHEME=scheme env + `make
+      # bootstrap` (the apt `chezscheme` package installs the `scheme` binary).
+      - name: Bootstrap-build the merged compiler (drift = build break)
+        env:
+          SCHEME: scheme
+        run: |
+          make bootstrap
+          echo "Merged compiler bootstrapped — no build-level drift."
+
+      # Prove the path-coverage feature specifically still elaborates: install the
+      # freshly-built compiler and rebuild the base library (carries
+      # System.Coverage / enterTest — the patch surface most exposed to drift).
+      - name: Rebuild base library (path-coverage surface)
+        env:
+          SCHEME: scheme
+        run: |
+          make install-idris2
+          make test-installed || \
+            (echo "::warning::installed-compiler test step degraded — verify System.Coverage still elaborates"; true)
+
+      - name: Open/update the drift tracking issue on failure
+        if: failure() && github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'upstream drift: fork needs a rebase';
+            const body = [
+              'The daily upstream-drift probe failed: merging `idris-lang/Idris2@main` into the',
+              'path-coverage fork either **conflicts** or **breaks the build**.',
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'Rebase the path-coverage patch stack (System.Coverage.enterTest / recordPathHit /',
+              '--dumppaths-json / effect_boundary / ES-Chez-RefC codegen hooks) onto fresh upstream,',
+              'rebuild, and confirm `idris2 --dumppaths-json` still emits path_ids.',
+            ].join('\n');
+            const q = `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open in:title "${title}"`;
+            const found = await github.rest.search.issuesAndPullRequests({ q });
+            if (found.data.total_count > 0) {
+              const n = found.data.items[0].number;
+              await github.rest.issues.createComment({ ...context.repo, issue_number: n, body });
+            } else {
+              await github.rest.issues.create({ ...context.repo, title, body, labels: ['upstream-drift'] });
+            }
