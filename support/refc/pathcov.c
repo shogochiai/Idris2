@@ -192,3 +192,11 @@ const char *__dfxcov_format_path_hits(void) {
   }
   return idris2_pathcov_dump;
 }
+
+// Non-const alias for Idris RefC FFI (a `PrimIO String` foreign binds the
+// return to `char *`; the buffer is the same static dump). Used by native
+// path-coverage soundness probes that read the recorded hits without the
+// canister __get_path_hits query transport.
+char *__dfxcov_format_path_hits_mut(void) {
+  return (char *)__dfxcov_format_path_hits();
+}

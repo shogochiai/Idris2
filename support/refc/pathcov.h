@@ -10,4 +10,5 @@ uint32_t __dfxcov_path_hit_count(void);
 uint32_t __dfxcov_path_hit_saturated(void);
 void __dfxcov_reset_path_hits(void);
 const char *__dfxcov_format_path_hits(void);
+char *__dfxcov_format_path_hits_mut(void);
 #endif
