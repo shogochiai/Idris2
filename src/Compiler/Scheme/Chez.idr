@@ -402,13 +402,36 @@ startChezPreamble = """
 
   """
 
-startChez : String -> String -> String
-startChez appdir target = startChezPreamble ++ """
+||| POSIX launcher. Not every Chez build produces a NATIVE standalone: on hosts
+||| whose chez emits a compiled-program fasl, the old unconditional
+||| `"$DIR/<target>" "$@"` exec'd a non-executable file (ENOEXEC — hit live on
+||| a fresh M1 setup). Sniff the first 4 bytes: a real Mach-O/ELF standalone is
+||| exec'd directly (unchanged fast path); anything else is run through the
+||| Chez runtime (`--program`), resolved from IDRIS2_CHEZ / CHEZ env, the
+||| build-time chez (baked as a DEFAULT, not the only option — the launcher
+||| must survive being copied to a host where that absolute path differs),
+||| then PATH candidates.
+startChez : (chez : String) -> String -> String -> String
+startChez chez appdir target = startChezPreamble ++ """
   export LD_LIBRARY_PATH="$DIR/\{ appdir }:$LD_LIBRARY_PATH"
   export DYLD_LIBRARY_PATH="$DIR/\{ appdir }:$DYLD_LIBRARY_PATH"
   export IDRIS2_INC_SRC="$DIR/\{ appdir }"
 
-  "$DIR/\{ target }" "$@"
+  TARGET="$DIR/\{ target }"
+
+  case "$(od -An -tx1 -N4 "$TARGET" 2>/dev/null | tr -d ' \\n')" in
+    7f454c46|feedface|feedfacf|cefaedfe|cffaedfe|cafebabe|bebafeca)
+      exec "$TARGET" "$@" ;;
+  esac
+
+  for CHEZBIN in "${IDRIS2_CHEZ:-}" "${CHEZ:-}" "\{ chez }" scheme chez chezscheme; do
+    [ -n "$CHEZBIN" ] || continue
+    if command -v "$CHEZBIN" >/dev/null 2>&1; then
+      exec "$CHEZBIN" -q --libdirs "$DIR/\{ appdir }" --program "$TARGET" "$@"
+    fi
+  done
+  echo "idris2 chez launcher: '$TARGET' is not a native executable and no Chez Scheme runtime was found (set IDRIS2_CHEZ)" >&2
+  exit 127
   """
 
 startChezCmd : String -> String -> String -> String -> String
@@ -616,9 +639,9 @@ compileToSSInc c mods libs appdir tm outfile
          pure ()
 
 
-makeSh : String -> String -> String -> Core ()
-makeSh outShRel appdir outAbs
-    = do Right () <- coreLift $ writeFile outShRel (startChez appdir outAbs)
+makeSh : (chez : String) -> String -> String -> String -> Core ()
+makeSh chez outShRel appdir outAbs
+    = do Right () <- coreLift $ writeFile outShRel (startChez chez appdir outAbs)
             | Left err => throw (FileErr outShRel err)
          pure ()
 
@@ -656,7 +679,7 @@ compileExprWhole makeitso c s tmpDir outputDir tm outfile
          let outShRel = outputDir </> outfile
          if isWindows
             then makeShWindows chez outShRel appDirRel (if makeitso then outSoFile else outSsFile) "--program"
-            else makeSh outShRel appDirRel (if makeitso then outSoFile else outSsFile)
+            else makeSh chez outShRel appDirRel (if makeitso then outSoFile else outSsFile)
          coreLift_ $ chmodRaw outShRel 0o755
          pure (Just outShRel)
 
@@ -686,7 +709,7 @@ compileExprInc makeitso c s tmpDir outputDir tm outfile
          let outShRel = outputDir </> outfile
          if isWindows
             then makeShWindows chez outShRel appDirRel outSsFile "--script"
-            else makeSh outShRel appDirRel outSsFile
+            else makeSh chez outShRel appDirRel outSsFile
          coreLift_ $ chmodRaw outShRel 0o755
          pure (Just outShRel)
 
