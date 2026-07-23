@@ -674,6 +674,13 @@ benignPrimSubstrings =
   , "idris2_time"
   , "blodwen-clock"
   , "blodwen-is-time"
+  -- getPID: a total, always-succeeding read of the current process id (same
+  -- class as getenv / the clock reads — the value varies, the PATH always
+  -- runs). Untriaged it classified pid-keyed scratch-file helpers (e.g.
+  -- Luci.Commands.Parity.pidScratch and its test) as claim-blocking
+  -- UnknownClassification, holding an otherwise-passing measurement
+  -- inadmissible.
+  , "idris2_getPID"
   ]
 
 -- The boundary tag for a ForeignDef. A known effect primitive (popen2/...) maps to
