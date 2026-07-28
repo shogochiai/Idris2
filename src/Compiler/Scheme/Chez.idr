@@ -499,7 +499,25 @@ collectRequestHandler = """
   """
 
 pathHitSupport : Maybe String -> Builder
-pathHitSupport Nothing = ""
+-- A non-instrumented build still generates unconditional call sites for
+-- both `(blodwen-enter-test ...)` and `(blodwen-record-path-hit ...)` (see
+-- Common.idr's schExtCommon for EnterTest/RecordPathHit — codegen does not
+-- know at the call site whether pathHitsFile was supplied, only pathHitSupport
+-- here does). Emitting "" left those calls referencing UNDEFINED identifiers,
+-- so any program built without --dumppathshits that happens to import
+-- System.Coverage (directly, or transitively via a test harness like
+-- Idris2TestSuite) failed at RUNTIME with "attempt to reference unbound
+-- identifier blodwen-record-path-hit" — a working, uninstrumented build that
+-- merely LINKS the coverage-attribution API should never fail this way.
+-- Found 2026-07-28 rebuilding GlobalRegistry's plain (non-instrumented)
+-- canister executable, which imports Idris2TestSuite -> System.Coverage for
+-- its own AllTests runner. Define both as no-ops instead of nothing: correct
+-- per pathHitSupport's own doc below ("a program that never calls enterTest
+-- writes plain lines" — the intended behaviour for the NO-HITS-FILE case was
+-- always "these calls do nothing", never "these calls don't exist").
+pathHitSupport Nothing =
+  "(define (blodwen-enter-test label) 0)\n"
+  ++ "(define (blodwen-record-path-hit path-id) 0)\n"
 pathHitSupport (Just hitsFile) =
   -- WRITE-ON-FIRST-HIT, deduped via an in-memory hashtable. We append+flush a
   -- path-id to the file the FIRST time it is hit, and never again. Two earlier
