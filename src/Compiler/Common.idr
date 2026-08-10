@@ -796,8 +796,38 @@ effectBoundaryOf (S fuel) seen n =
                 then pure b
                 else go ms sn
 
-functionPathEntry : {auto c : Ref Ctxt Defs} -> Name -> Core (Maybe (String, String))
-functionPathEntry n =
+-- D1/D4 (pathcov-id-scheme-design): make each declaration id UNIQUE per run for
+-- the classes `show` renders ambiguously (sibling `case block in foo`, if/then/else
+-- and record-update which desugar to case blocks, instance methods). The default
+-- name drops the disambiguator, so siblings share one id and the exporter merges
+-- them, under-counting the denominator (Finding E). We append a SOURCE-ORDER
+-- ordinal `~<k>` -- but ONLY to names that actually have a sibling, so a unique
+-- name (top-level fn, where-local, singleton case block) is unchanged. The ordinal
+-- is the count of same-named declarations BEFORE this one in emission order, which
+-- preserves siblings' relative order under edits ELSEWHERE in the file (measured:
+-- the CaseBlock index churns 16/39 -> 151/174 on an unrelated insertion, but the
+-- relative order 16<39, 151<174 does not). That is why the disambiguator is a
+-- source-order ordinal (D4), not the churn-prone structural index: eraseLineCol
+-- never strips `~<k>`, so the emitted stable_key stays BOTH distinct between
+-- siblings AND invariant under unrelated edits.
+disambiguate : List Name -> List String
+disambiguate ns =
+  let names  = map fullShowName ns
+      counts = foldl (\m, s => SortedMap.insert s (S (maybe 0 id (SortedMap.lookup s m))) m) SortedMap.empty names
+  in reverse (snd (foldl (step counts) (SortedMap.empty, []) names))
+  where
+    step : SortedMap String Nat -> (SortedMap String Nat, List String) -> String ->
+           (SortedMap String Nat, List String)
+    step counts (seen, acc) nm =
+      let k     = maybe 0 id (SortedMap.lookup nm seen)
+          seen' = SortedMap.insert nm (S k) seen
+          disp  = if maybe False (> 1) (SortedMap.lookup nm counts)
+                     then nm ++ "~" ++ show k
+                     else nm
+      in (seen', disp :: acc)
+
+functionPathEntry : {auto c : Ref Ctxt Defs} -> Name -> String -> Core (Maybe (String, String))
+functionPathEntry n dispName =
   do defs <- get Ctxt
      Just gdef <- lookupCtxtExact n (gamma defs)
           | Nothing => pure Nothing
@@ -812,7 +842,7 @@ functionPathEntry n =
        -- machinery here (optimizer_artifact, compiler_partial_completion) is built
        -- for the runtime tree, so treeRT is the intended source.
        PMDef _ _ _ treeRT _ =>
-         let functionName = fullShowName n
+         let functionName = dispName
          in do treeRTFull <- full (gamma defs) treeRT
                let (paths, _) = collectPathResults functionName 0 treeRTFull
                -- Fact-grounded boundary: a compiler-computed call-graph property,
@@ -829,22 +859,30 @@ functionPathEntry n =
                     )
        _ => pure Nothing
 
-functionPathsJson : {auto c : Ref Ctxt Defs} -> Name -> Core (Maybe String)
-functionPathsJson n = map (map snd) (functionPathEntry n)
+functionPathsJson : {auto c : Ref Ctxt Defs} -> Name -> String -> Core (Maybe String)
+functionPathsJson n dispName = map (map snd) (functionPathEntry n dispName)
 
+-- D1/D4: disambiguate the WHOLE name list up front (siblings need to see each
+-- other), then process each name with its unique display id.
 collectFunctionPathsJson : {auto c : Ref Ctxt Defs} -> List Name -> Core (List String)
-collectFunctionPathsJson [] = pure []
-collectFunctionPathsJson (n :: ns) =
-  do here <- functionPathsJson n
-     there <- collectFunctionPathsJson ns
-     pure $ maybe there (\entry => entry :: there) here
+collectFunctionPathsJson ns = go (zip ns (disambiguate ns))
+  where
+    go : List (Name, String) -> Core (List String)
+    go [] = pure []
+    go ((n, d) :: rest) =
+      do here <- functionPathsJson n d
+         there <- go rest
+         pure $ maybe there (\entry => entry :: there) here
 
 collectFunctionPathEntries : {auto c : Ref Ctxt Defs} -> List Name -> Core (List (String, String))
-collectFunctionPathEntries [] = pure []
-collectFunctionPathEntries (n :: ns) =
-  do here <- functionPathEntry n
-     there <- collectFunctionPathEntries ns
-     pure $ maybe there (\entry => entry :: there) here
+collectFunctionPathEntries ns = go (zip ns (disambiguate ns))
+  where
+    go : List (Name, String) -> Core (List (String, String))
+    go [] = pure []
+    go ((n, d) :: rest) =
+      do here <- functionPathEntry n d
+         there <- go rest
+         pure $ maybe there (\entry => entry :: there) here
 
 pathPartsFile : String -> String
 pathPartsFile fn = fn ++ ".parts"
@@ -900,15 +938,18 @@ dedupeFunctionEntries = go SortedMap.empty []
 
 collectMissingFunctionPathsJson : {auto c : Ref Ctxt Defs} ->
                                   SortedMap String () -> List Name -> Core (List String)
-collectMissingFunctionPathsJson _ [] = pure []
-collectMissingFunctionPathsJson seen (n :: ns) =
-  do let fn = fullShowName n
-     rest <- collectMissingFunctionPathsJson seen ns
-     case SortedMap.lookup fn seen of
-          Just _ => pure rest
-          Nothing =>
-            do here <- functionPathsJson n
-               pure $ maybe rest (\entry => entry :: rest) here
+collectMissingFunctionPathsJson seen ns = go (zip ns (disambiguate ns))
+  where
+    go : List (Name, String) -> Core (List String)
+    go [] = pure []
+    go ((n, d) :: rest) =
+      do let fn = fullShowName n
+         r <- go rest
+         case SortedMap.lookup fn seen of
+              Just _ => pure r
+              Nothing =>
+                do here <- functionPathsJson n d
+                   pure $ maybe r (\entry => entry :: r) here
 
 writePathsJsonPayload : String -> List String -> Core ()
 writePathsJsonPayload fn functions
