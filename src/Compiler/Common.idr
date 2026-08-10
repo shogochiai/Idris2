@@ -813,16 +813,27 @@ extractFunctionNameEntry entry
                           then Just i
                           else go (S i)
 
-dedupeFunctionEntries : List String -> List String
-dedupeFunctionEntries = reverse . snd . foldl keep (SortedMap.empty, [])
+-- D1a (pathcov-id-scheme-design): a duplicate function_name whose path records
+-- DIFFER is a collision, not a merge. Two distinct declarations can share one
+-- `fullShowName` (anonymous case blocks, instance methods: Finding E); the old
+-- code silently kept the first and dropped the second declaration's paths from
+-- the denominator — wrong in the direction that looks like success. Same-content
+-- repeats (chunked runs append the same function unchanged) stay benign and are
+-- deduped. On a real collision we return `Left fn` so the exporter fails loudly
+-- rather than emit a quietly-undercounted denominator.
+dedupeFunctionEntries : List String -> Either String (List String)
+dedupeFunctionEntries = go SortedMap.empty []
   where
-    keep : (SortedMap String (), List String) -> String -> (SortedMap String (), List String)
-    keep (seen, acc) entry =
+    go : SortedMap String String -> List String -> List String -> Either String (List String)
+    go _ acc [] = Right (reverse acc)
+    go seen acc (entry :: rest) =
       case extractFunctionNameEntry entry of
+           Nothing => go seen (entry :: acc) rest
            Just fn => case SortedMap.lookup fn seen of
-                           Just _ => (seen, acc)
-                           Nothing => (SortedMap.insert fn () seen, entry :: acc)
-           Nothing => (seen, entry :: acc)
+                           Just prev => if prev == entry
+                                           then go seen acc rest
+                                           else Left fn
+                           Nothing => go (SortedMap.insert fn entry seen) (entry :: acc) rest
 
 collectMissingFunctionPathsJson : {auto c : Ref Ctxt Defs} ->
                                   SortedMap String () -> List Name -> Core (List String)
@@ -869,7 +880,13 @@ finalizePathsJson fn ns
     = do let partsFn = pathPartsFile fn
          hasParts <- coreLift $ exists partsFn
          existing <- if hasParts then Core.readFile partsFn else pure ""
-         let parts = dedupeFunctionEntries $ filter (/= "") (lines existing)
+         parts <- case dedupeFunctionEntries (filter (/= "") (lines existing)) of
+                       Right ps => pure ps
+                       Left dup => throw $ InternalError $
+                         "[dumppaths] duplicate function_name '" ++ dup ++
+                         "' with differing path records: colliding declaration ids " ++
+                         "(pathcov D1a / Finding E). Refusing to silently merge into " ++
+                         "a quietly-undercounted denominator."
          let seen = foldl (\acc, entry =>
                              case extractFunctionNameEntry entry of
                                   Just fn => SortedMap.insert fn () acc
