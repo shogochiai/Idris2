@@ -748,10 +748,19 @@ functionPathEntry n =
      Just gdef <- lookupCtxtExact n (gamma defs)
           | Nothing => pure Nothing
      case definition gdef of
-       PMDef _ _ treeCT _ _ =>
+       -- Read the RUNTIME tree (treeRT), not the compile-time source tree
+       -- (treeCT). Only treeRT materializes the compiler-inserted default for a
+       -- non-exhaustive `partial` function -- an `Unmatched "Unhandled input..."`
+       -- catch-all that the classifier lowers to a UserAdmittedPartialGap /
+       -- partial_gap obligation. treeCT has only the user's written clauses, so
+       -- reading it silently drops every partial-gap path from the denominator
+       -- (regression from 995c3ff2c's "stabilize" flip). The classification
+       -- machinery here (optimizer_artifact, compiler_partial_completion) is built
+       -- for the runtime tree, so treeRT is the intended source.
+       PMDef _ _ _ treeRT _ =>
          let functionName = fullShowName n
-         in do treeCTFull <- full (gamma defs) treeCT
-               let (paths, _) = collectPathResults functionName 0 treeCTFull
+         in do treeRTFull <- full (gamma defs) treeRT
+               let (paths, _) = collectPathResults functionName 0 treeRTFull
                -- Fact-grounded boundary: a compiler-computed call-graph property,
                -- emitted so the consumer can exclude only harness-unexecutable
                -- paths with this witness (never an observer judgment).
