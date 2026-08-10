@@ -449,6 +449,7 @@ record PathResult where
   constructor MkPathResult
   terminal : PathTerminal
   steps : List String
+  labels : List String   -- D2: branch_label chain (root->leaf), input to stable_key
 
 pathTerminalFromCrashOrigin : String -> String -> PathTerminal
 pathTerminalFromCrashOrigin "compiler_partial_completion" msg =
@@ -520,9 +521,9 @@ branchOriginForSubtree (Unmatched msg) = originFromCrashMessage msg
 branchOriginForSubtree _ = "user_clause"
 
 prependStep : String -> Nat -> Nat -> String -> String -> Maybe String -> PathResult -> PathResult
-prependStep functionName caseIdx branchIdx branchLabel origin sourceSpan (MkPathResult terminal steps) =
+prependStep functionName caseIdx branchIdx branchLabel origin sourceSpan (MkPathResult terminal steps labels) =
   let step = stepJson functionName caseIdx branchIdx branchLabel origin sourceSpan
-  in MkPathResult terminal (step :: steps)
+  in MkPathResult terminal (step :: steps) (branchLabel :: labels)
 
 mutual
   collectPathResults : String -> Nat -> CaseTree vars -> (List PathResult, Nat)
@@ -531,7 +532,7 @@ mutual
         sourceSpan = fcToMaybeString (getLoc scTy)
     in collectAltPathResults functionName caseIdx 0 (S nextCase) sourceSpan alts
   collectPathResults functionName nextCase leaf =
-    ([MkPathResult (pathTerminalForLeaf leaf) []], nextCase)
+    ([MkPathResult (pathTerminalForLeaf leaf) [] []], nextCase)
 
   collectAltPathResults : String -> Nat -> Nat -> Nat -> Maybe String ->
                           List (CaseAlt vars) -> (List PathResult, Nat)
@@ -565,10 +566,54 @@ mutual
         (there, next2) = collectAltPathResults functionName caseIdx (S branchIdx) next1 sourceSpan rest
     in (here' ++ there, next2)
 
-pathResultJson : String -> Nat -> PathResult -> String
-pathResultJson functionName pathIdx (MkPathResult terminal steps) =
+-- D2 (pathcov-id-scheme-design): erase every "<digits>:<digits>:" source-position
+-- run from a declaration id, keeping the nesting shape. Byte-identical to luci's
+-- BuildFromThread.eraseLineColPrefix (the D3 stopgap this field replaces), so the
+-- position-independent comparison key has ONE definition -- the emitter's.
+eraseLineCol : String -> String
+eraseLineCol s = pack (go (unpack s))
+  where
+    isDigitChar : Char -> Bool
+    isDigitChar c = c >= '0' && c <= '9'
+    dropLineColRun : List Char -> Maybe (List Char)
+    dropLineColRun cs =
+      let (d1, rest1) = span isDigitChar cs in
+      case (d1, rest1) of
+        ([], _) => Nothing
+        (_, ':' :: rest1') =>
+          let (d2, rest2) = span isDigitChar rest1' in
+          case (d2, rest2) of
+            ([], _) => Nothing
+            (_, ':' :: rest2') => Just rest2'
+            _ => Nothing
+        _ => Nothing
+    go : List Char -> List Char
+    go [] = []
+    go cs@(c :: rest) =
+      if isDigitChar c
+        then case dropLineColRun cs of
+               Just after => go after
+               Nothing    => c :: go rest
+        else c :: go rest
+
+joinLabels : List String -> String
+joinLabels [] = "-"
+joinLabels [x] = x
+joinLabels (x :: xs) = x ++ "," ++ joinLabels xs
+
+-- D2: the inter-run COMPARISON key, emitted (never reconstructed by a consumer,
+-- per D3). = (module + nesting shape via eraseLineCol) | branch_label chain |
+-- ordinal among identical siblings. Position-erased, so an edit ELSEWHERE in the
+-- file leaves it unchanged while `path_id` (the intra-run uniqueness key) churns.
+stableKey : String -> List String -> Nat -> String
+stableKey functionName labels ordinal =
+  eraseLineCol functionName ++ "|" ++ joinLabels labels ++ "|" ++ show ordinal
+
+pathResultJson : String -> Nat -> Nat -> PathResult -> String
+pathResultJson functionName pathIdx ordinal (MkPathResult terminal steps labels) =
   jsonObject $
     [ jsonField "path_id" (jsonString (functionName ++ "#p" ++ show pathIdx))
+    , jsonField "stable_key" (jsonString (stableKey functionName labels ordinal))
     , jsonField "classification" (jsonString (classification terminal))
     , jsonField "terminal_kind" (jsonString (terminalKind terminal))
     , jsonField "terminal_origin" (jsonString (terminalOrigin terminal))
@@ -577,10 +622,19 @@ pathResultJson functionName pathIdx (MkPathResult terminal steps) =
     ] ++ maybe [] (\clauseId => [jsonField "terminal_clause_id" (show clauseId)]) (terminalClauseId terminal)
       ++ maybe [] (\msg => [jsonField "terminal_message" (jsonString msg)]) (terminalMessage terminal)
 
+-- ordinal (D4) = occurrence index of this path among siblings sharing the same
+-- branch_label chain within this declaration (functionName is constant per entry,
+-- so grouping on the label chain is exactly "same module + decl shape + labels").
 pathResultsJson : String -> Nat -> List PathResult -> List String
-pathResultsJson _ _ [] = []
-pathResultsJson functionName pathIdx (path :: rest) =
-  pathResultJson functionName pathIdx path :: pathResultsJson functionName (S pathIdx) rest
+pathResultsJson functionName startIdx paths = go SortedMap.empty startIdx paths
+  where
+    go : SortedMap String Nat -> Nat -> List PathResult -> List String
+    go _ _ [] = []
+    go seen idx (path :: rest) =
+      let key  = joinLabels (labels path)
+          ord  = maybe 0 id (SortedMap.lookup key seen)
+          seen' = SortedMap.insert key (S ord) seen
+      in pathResultJson functionName idx ord path :: go seen' (S idx) rest
 
 -- ===========================================================================
 -- EffectBoundary fact-grounding (the trick-proof denominator-exclusion basis)
