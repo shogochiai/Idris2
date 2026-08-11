@@ -380,6 +380,11 @@ processMod sourceFileName ttcFileName msg sourcecode origin
                 logTime 2 "Reading imports" $
                    traverse_ (readImport False) allImports
 
+                -- Imported TTCs carry the producer compiler's next fresh-name seed.
+                -- Reset here so current-module machine names do not depend on the
+                -- last imported module, which breaks incremental rebuild stability.
+                resetNextVar
+
                 -- Before we process the source, make sure the "hide_everywhere"
                 -- names are set to private (TODO, maybe if we want this?)
 --                 defs <- get Ctxt
@@ -427,7 +432,10 @@ process msgPrefix buildMsg sourceFileName ident
                                      pure [] -- skipped it
                    if isNil errs
                       then
-                        do ns <- ctxtPathToNS sourceFileName
+                        do sopts <- getSession
+                           whenJust (dumppathsjson sopts) $ \f =>
+                             snapshotCurrentModulePathsJson f
+                           ns <- ctxtPathToNS sourceFileName
                            makeBuildDirectory ns
                            traverse_
                               (\cg =>

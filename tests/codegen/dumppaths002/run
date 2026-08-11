@@ -1,0 +1,16 @@
+. ../../testutils.sh
+rm -f Main.paths Main.paths.parts Main extract
+rm -rf build
+
+idris2 --dumppaths-json Main.paths -o Main Main.idr
+
+# Project the JSON to stable rows with an Idris helper (contrib Language.JSON),
+# not an external post-processor. Filter to the functions under test, then sort.
+idris2 --source-dir .. -p contrib -o extract ../PathsExtract.idr
+./build/exec/extract Main.paths \
+  | awk -F'\t' '
+      $1=="Main.case block in runTests" || $1=="Main.safeHead" \
+      || $1=="Main.useSafeHead" || $1=="Main.runTests" \
+      || $1=="Main.runMinimalTests" || $1=="Main.runTrivialTest" \
+      || $1=="Main.main" {print $1, $2, $3, $4, $5}' \
+  | safesort
