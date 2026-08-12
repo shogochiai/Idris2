@@ -679,3 +679,35 @@
   (symbol->string sym))
 
 (define (blodwen-id x) x)
+
+;; Path attribution hooks (System.Coverage).
+;;
+;; Defined unconditionally so a program that calls them links and runs in an
+;; ordinary build: without IDRIS2_PATH_HITS set they do nothing. Defining them
+;; only when instrumentation is enabled would leave an unbound identifier in any
+;; build that merely mentions them.
+(define blodwen-path-hits-label "")
+(define blodwen-path-hits-port 'unopened)
+
+(define (blodwen-path-hits-out)
+  (when (eq? blodwen-path-hits-port 'unopened)
+    (let ([path (getenv "IDRIS2_PATH_HITS")])
+      (set! blodwen-path-hits-port
+            (if (and path (> (string-length path) 0))
+                (open-file-output-port path (file-options no-fail no-truncate append)
+                                       (buffer-mode line)
+                                       (make-transcoder (utf-8-codec)))
+                #f))))
+  blodwen-path-hits-port)
+
+(define (blodwen-enter-test label)
+  (set! blodwen-path-hits-label label))
+
+(define (blodwen-record-path-hit path-id)
+  (let ([out (blodwen-path-hits-out)])
+    (when out
+      (put-string out blodwen-path-hits-label)
+      (put-string out "\t")
+      (put-string out path-id)
+      (put-string out "\n")
+      (flush-output-port out))))
