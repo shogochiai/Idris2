@@ -17,6 +17,44 @@ import Libraries.Data.List.SizeOf
 
 %default covering
 
+-- Path instrumentation.
+--
+-- Under `--dumppaths-hits`, every leaf of a definition's case tree is wrapped in
+-- a call recording that the path ran. The index counts leaves in traversal order
+-- and is reset per definition, so it lines up with the static enumeration the
+-- paths export produces for the same tree.
+--
+-- The counter is a `Ref` rather than an argument threaded through the tree walk.
+-- Threading it would mean a second copy of the walk (one returning `CExp`, one
+-- returning `(CExp, Nat)`), and the two copies drift: an earlier version of this
+-- feature had exactly that, and the instrumented copy lost the newtype case, so
+-- a newtype projection compiled to `erased` and crashed at run time. With a Ref
+-- there is one walk, and with instrumentation off `instrumentLeaf` returns the
+-- body unchanged -- so the uninstrumented output is not merely intended to be
+-- unchanged, it is produced by the same code.
+data PathIdx : Type where
+
+pathHitPrim : Name
+pathHitPrim = UN (Basic "prim__recordPathHit")
+
+||| Wrap a case-tree leaf so that reaching it records `<function>#p<n>`.
+||| A no-op unless `--dumppaths-hits` was given.
+instrumentLeaf : {auto c : Ref Ctxt Defs} ->
+                 {auto p : Ref PathIdx Nat} ->
+                 Name -> FC -> CExp vars -> Core (CExp vars)
+instrumentLeaf n fc body
+    = case dumppathshits !getSession of
+           Nothing => pure body
+           Just _ =>
+             do idx <- get PathIdx
+                put PathIdx (S idx)
+                fn <- getFullName n
+                let pathId = show fn ++ "#p" ++ show idx
+                let binder = MN "__path_hit" (cast idx)
+                pure $ CLet fc binder NotInline
+                         (CExtPrim fc pathHitPrim [CPrimVal fc (Str pathId)])
+                         (weaken body)
+
 data Args
     = NewTypeBy Nat Nat
     | EraseArgs Nat NatSet
@@ -206,6 +244,7 @@ toCExp n tm
 mutual
   conCases : {vars : _} ->
              {auto c : Ref Ctxt Defs} ->
+             {auto p : Ref PathIdx Nat} ->
              Name -> List (CaseAlt vars) ->
              Core (List (CConAlt vars))
   conCases n [] = pure []
@@ -234,6 +273,7 @@ mutual
 
   constCases : {vars : _} ->
                {auto c : Ref Ctxt Defs} ->
+               {auto p : Ref PathIdx Nat} ->
                Name -> List (CaseAlt vars) ->
                Core (List (CConstAlt vars))
   constCases n [] = pure []
@@ -251,6 +291,7 @@ mutual
   -- once.
   getNewType : {vars : _} ->
                {auto c : Ref Ctxt Defs} ->
+               {auto p : Ref PathIdx Nat} ->
                FC -> CExp vars ->
                Name -> List (CaseAlt vars) ->
                Core (Maybe (CExp vars))
@@ -306,6 +347,7 @@ mutual
 
   getDef : {vars : _} ->
            {auto c : Ref Ctxt Defs} ->
+             {auto p : Ref PathIdx Nat} ->
            Name -> List (CaseAlt vars) ->
            Core (Maybe (CExp vars))
   getDef n [] = pure Nothing
@@ -317,6 +359,7 @@ mutual
 
   toCExpTree : {vars : _} ->
                {auto c : Ref Ctxt Defs} ->
+               {auto p : Ref PathIdx Nat} ->
                Name -> CaseTree vars ->
                Core (CExp vars)
   toCExpTree n alts@(Case _ x scTy (DelayCase ty arg sc :: rest))
@@ -330,12 +373,17 @@ mutual
 
   toCExpTree' : {vars : _} ->
                 {auto c : Ref Ctxt Defs} ->
+             {auto p : Ref PathIdx Nat} ->
                 Name -> CaseTree vars ->
                 Core (CExp vars)
   toCExpTree' n (Case _ x scTy alts@(ConCase _ _ _ _ :: _))
       = let fc = getLoc scTy in
-            do Nothing <- getNewType fc (CLocal fc x) n alts
-                   | Just def => pure def
+            do -- A newtype match is not a runtime branch: it is inlined to the
+               -- substituted right-hand side. The static enumeration treats it
+               -- as a single pass-through leaf, so instrument it as one too,
+               -- keeping the hit indices in step.
+               Nothing <- getNewType fc (CLocal fc x) n alts
+                   | Just def => instrumentLeaf n fc def
                defs <- get Ctxt
                cases <- conCases n alts
                def <- getDef n alts
@@ -354,12 +402,15 @@ mutual
   toCExpTree' n (Case _ x scTy alts@(DefaultCase sc :: _))
       = toCExpTree n sc
   toCExpTree' n (Case _ x scTy [])
-      = pure $ CCrash (getLoc scTy) $ "Missing case tree in " ++ show n
-  toCExpTree' n (STerm _ tm) = toCExp n tm
+      = instrumentLeaf n (getLoc scTy) $
+          CCrash (getLoc scTy) $ "Missing case tree in " ++ show n
+  toCExpTree' n (STerm _ tm)
+      = instrumentLeaf n (getLoc tm) !(toCExp n tm)
   toCExpTree' n (Unmatched msg)
-      = pure $ CCrash emptyFC msg
+      = instrumentLeaf n emptyFC $ CCrash emptyFC msg
   toCExpTree' n Impossible
-      = pure $ CCrash emptyFC ("Impossible case encountered in " ++ show n)
+      = instrumentLeaf n emptyFC $
+          CCrash emptyFC ("Impossible case encountered in " ++ show n)
 
 -- Need this for ensuring that argument list matches up to operator arity for
 -- builtins
@@ -545,6 +596,9 @@ toCDef n ty _ None
     = pure $ MkError $ CCrash emptyFC ("Encountered undefined name " ++ show !(getFullName n))
 toCDef n ty erased (PMDef pi args _ tree _)
     = do let (args' ** p) = fromNatSet erased args
+         -- Leaf indices restart at each definition, so the path ids recorded at
+         -- run time match the per-function enumeration of the same case tree.
+         _ <- newRef PathIdx Z
          comptree <- toCExpTree n tree
          pure $ toLam (externalDecl pi) $ if isEmpty erased
             then MkFun args comptree

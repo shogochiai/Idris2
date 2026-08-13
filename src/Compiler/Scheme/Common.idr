@@ -204,6 +204,7 @@ data ExtPrim = NewIORef | ReadIORef | WriteIORef
              | SysOS | SysCodegen
              | OnCollect
              | OnCollectAny
+             | RecordPathHit
              | Unknown Name
 
 export
@@ -220,6 +221,7 @@ Show ExtPrim where
   show SysCodegen = "SysCodegen"
   show OnCollect = "OnCollect"
   show OnCollectAny = "OnCollectAny"
+  show RecordPathHit = "RecordPathHit"
   show (Unknown n) = "Unknown " ++ show n
 
 ||| Match on a user given name to get the scheme primitive
@@ -236,8 +238,12 @@ toPrim pn@(NS _ n)
             (n == UN (Basic "prim__os"), SysOS),
             (n == UN (Basic "prim__codegen"), SysCodegen),
             (n == UN (Basic "prim__onCollect"), OnCollect),
-            (n == UN (Basic "prim__onCollectAny"), OnCollectAny)
+            (n == UN (Basic "prim__onCollectAny"), OnCollectAny),
+            (n == UN (Basic "prim__recordPathHit"), RecordPathHit)
             ]
+           (Unknown pn)
+toPrim pn@(UN (Basic n))
+    = cond [(n == "prim__recordPathHit", RecordPathHit)]
            (Unknown pn)
 toPrim pn = Unknown pn
 
@@ -656,6 +662,8 @@ parameters (constants : SortedSet Name)
                                          ++ !(schExp i val) ++ ")"
   schExtCommon i SysOS []
       = pure $ "(blodwen-os)"
+  schExtCommon i RecordPathHit [NmPrimVal _ (Str pathId)]
+      = pure $ "(begin (blodwen-record-path-hit " ++ showB pathId ++ ") 0)"
   schExtCommon i (Unknown n) args
       = throw (InternalError ("Can't compile unknown external primitive " ++ show n))
   schExtCommon i prim args

@@ -1,0 +1,16 @@
+. ../../testutils.sh
+rm -f Main.paths Main.hits
+rm -rf build
+
+# Build with both the static path enumeration and the runtime hit recorder.
+idris2 --dumppaths-json Main.paths --dumppaths-hits Main.hits -o main Main.idr
+
+# The recorder writes to the file named by IDRIS2_PATH_HITS, following the
+# convention of GCOV_PREFIX / LLVM_PROFILE_FILE: the output location is chosen
+# when the program RUNS, so a shipped binary carries no build-machine path.
+IDRIS2_PATH_HITS=Main.hits ./build/exec/main
+
+# Each line is "<label>\t<path-id>". Show, for the two functions of interest,
+# which label each hit is attributed to -- proving attribution is per-label and
+# never crossed.
+awk -F'\t' '$2 ~ /^Main\.(listHead|fromOpt)#/ {print $1, $2}' Main.hits | safesort

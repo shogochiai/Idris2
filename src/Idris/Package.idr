@@ -1041,6 +1041,7 @@ partitionOpts opts = foldr pOptUpdate (MkPFR [] [] False) opts
     optType (DumpANF f)            = POpt
     optType (DumpCases f)          = POpt
     optType (DumpPathsJSON f)      = POpt
+    optType (DumpPathHits f)       = POpt
     optType (DumpLifted f)         = POpt
     optType (DumpVMCode f)         = POpt
     optType DebugElabCheck         = POpt
