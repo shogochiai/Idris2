@@ -28,9 +28,21 @@ do with code quality — see §5.
 |---|---|---|---|
 | `main` | — | the fork as it was | untouched |
 | **`pathcov-stable-key`** | fork `main` (`46a31dc6b`) | **the one the downstream tool would use.** Fork features + the identity fixes below | pushed; builds; luci verified against it |
-| **`pathcov-upstream-1-paths-export`** | `upstream/main` (`134412e1c`) | feature §1 alone, de-branded: `--dumppaths-json` | pushed; builds; **bootstraps from scratch**; tests pass |
-| **`pathcov-upstream-2-paths-hits`** | `pathcov-upstream-1-…` | §1 + feature §2: `--dumppaths-hits` + `System.Coverage` | pushed; builds; **bootstraps from scratch**; tests pass |
+| **`pathcov-upstream-1-paths-export`** | upstream `0fb7253b8` | feature §1 alone, de-branded: `--dumppaths-json` (`af4f40e95`) | pushed; builds; **bootstraps from scratch**; tests pass |
+| **`pathcov-upstream-2-paths-hits`** | `pathcov-upstream-1-…` | §1 + feature §2: `--dumppaths-hits` + `System.Coverage` (`63e1b48ad`, `4c309e6f2`) | pushed; builds; **bootstraps from scratch**; tests pass |
 | **`pathcov-notes`** | fork `main` | this file and the study documents beside it | docs only, no code |
+
+> **Why the upstream branches sit on `0fb7253b8` rather than on `upstream/main`.**
+> They were developed and verified on `upstream/main` (`134412e1c`), but that
+> could not be pushed: three of the thirteen commits between the fork and
+> `upstream/main` touch `.github/workflows/`, and pushing those needs a token
+> with `workflow` scope, which this one lacks (it has `gist, read:org, repo`).
+> `0fb7253b8` is the fork/upstream **merge base** — real upstream history the
+> fork already has — so the branches push cleanly. This costs nothing in
+> substance: **none of the seven files these features touch changed in those
+> thirteen commits** (measured), and the rebased tips were re-verified end to end
+> (build, all four tests, bootstrap from scratch). To move them onto current
+> upstream later: `gh auth refresh -h github.com -s workflow`, then rebase.
 
 ### `shogochiai/idris2-magical-utils`
 `pathcov-stable-key` — the coverage tool reads the emitted `stable_key` and
