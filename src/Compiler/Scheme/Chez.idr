@@ -415,7 +415,9 @@ startChez : (chez : String) -> String -> String -> String
 startChez chez appdir target = startChezPreamble ++ """
   export LD_LIBRARY_PATH="$DIR/\{ appdir }:$LD_LIBRARY_PATH"
   export DYLD_LIBRARY_PATH="$DIR/\{ appdir }:$DYLD_LIBRARY_PATH"
+  export DYLD_FALLBACK_LIBRARY_PATH="$DIR/\{ appdir }:$DYLD_FALLBACK_LIBRARY_PATH"
   export IDRIS2_INC_SRC="$DIR/\{ appdir }"
+  export IDRIS2_APPDIR="$DIR/\{ appdir }"
 
   TARGET="$DIR/\{ target }"
 
