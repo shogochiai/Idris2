@@ -76,9 +76,18 @@ should target this file (`CHANGELOG_NEXT`).
 * Optimised the passing of local variables during compile-time normalisation.
 * Added `getFC` to elaborator reflection, exposing the macro call-site source
   location.
+* Normalize through private definitions when evaluating `%foreign` and
+  `%foreign_impl` strings [#3790](https://github.com/idris-lang/Idris2/issues/3790)
+  * Improve related error messages
+* Fix exponential time issue in totality checking with large data on the left hand side (#3696).
+* Allow implicit lambdas using the syntax `\ {x} => ...`.
 * Removed `Borrowing` as a language extension.  This was never implemented in
   Idris2, so the only change is that `%language Borrowing` will now error rather
   than be accepted but do nothing.
+* HTML files generated using `--mkdoc` now contain attributes, that allow
+  external tools to insert links from documentation to source code.
+* Fix exponential time issue in pretty printer.
+* Fix insertion of implicit lambdas when expected type is a meta (#3851)
 * Fixed `parseDouble` dropping "-" sign when whole part is "0"
   [#3804](https://github.com/idris-lang/Idris2/issues/3804),
 
@@ -107,6 +116,10 @@ should target this file (`CHANGELOG_NEXT`).
 * Fix headers for numeric negation.
 * Prefix RefC Idris values with `Idris2_` to prevent name collisions with third
   partly libraries.
+* Fixed casts from `String` failing to compile
+  ([#3812](https://github.com/idris-lang/Idris2/issues/3812)): the support
+  library exported the cast helpers as `idris2_cast_String_to_*` while the
+  generated code calls `idris2_cast_string_to_*`.
 
 ### Library changes
 
@@ -117,3 +130,5 @@ should target this file (`CHANGELOG_NEXT`).
 * Added `decToMaybe`, `maybeCong` and `maybeCong2` to `Data.Maybe`.
 * Added `maybeEq` to `Decidable.Equality`.
 * Removed `writeIORef1`, which unsafely allowed a linear value to become unrestricted.
+* Made `xs` and `ys` explicit arguments of `SplitRecPair` in `Data.Vect.Views`.
+* Implemented core interfaces for `Data.Singleton`

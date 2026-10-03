@@ -1,6 +1,7 @@
 name: Idris2 and External Libs
 
 on:
+  merge_group:
   push:
     branches:
       - '*'
@@ -32,6 +33,7 @@ on:
       - '.github/workflows/ci-lint.yml'
       - '.github/workflows/ci-sphinx.yml'
       - '.github/workflows/ci-super-linter.yml'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.ref }}
@@ -363,6 +365,7 @@ jobs:
     needs: ubuntu-bootstrap-racket
     runs-on: ubuntu-latest
     if: false
+    timeout-minutes: 60
     env:
       IDRIS2_CG: racket
     steps:
@@ -795,3 +798,23 @@ jobs:
           branch: gh-pages
           folder: .github/scripts/html/
           git-config-name: Github Actions
+
+  overall-success:
+    needs:
+      [ ubuntu-bootstrap-racket # ubuntu-self-host-racket
+      , macos-self-host-chez
+      , ub-pack-test-lsp
+      , ub-pack-test-pack
+      , ub-test-collie
+      , ub-test-elab-util
+      , ub-test-frex
+      , ub-test-katla-and-html
+      , nix-bootstrap-chez
+      , ubuntu-self-host-chez
+      , ubuntu-build-api
+      , windows-self-host-racket
+      ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Success!
+        run: true
