@@ -176,6 +176,6 @@ long idris2_getNProcessors() {
   size_t n = sizeof(numcpus);
   return sysctll(xs, 2, &numcpus, &len, NULL, 0) < 0 ? 1 : numcpus;
 #else
-  return 1
+  return 1;
 #endif
 }
