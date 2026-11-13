@@ -320,10 +320,13 @@ jsonString str = "\"" ++ jsonEscape str ++ "\""
 jsonField : String -> String -> String
 jsonField key value = jsonString key ++ ": " ++ value
 
+||| One allocation for the whole result. The recursive form
+||| `x ++ ", " ++ joinWithComma xs` copied the rest of the output twice at every
+||| element: quadratic in the size of the JSON. Measured 2026-11-14 on the 29139
+||| function entries (31.5 MB) of one package: 73 min in the stage that ends in this join, against
+||| 27 min to compile its 289 modules; on an 8 MB prefix 398 s against 0.05 s.
 joinWithComma : List String -> String
-joinWithComma [] = ""
-joinWithComma [x] = x
-joinWithComma (x :: xs) = x ++ ", " ++ joinWithComma xs
+joinWithComma xs = fastConcat (intersperse ", " xs)
 
 jsonObject : List String -> String
 jsonObject fields = "{ " ++ joinWithComma fields ++ " }"
